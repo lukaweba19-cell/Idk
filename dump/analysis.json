@@ -1,0 +1,373 @@
+{
+ "classes": {
+  "DataModel": 1,
+  "Chat": 1,
+  "Lighting": 1,
+  "Atmosphere": 2,
+  "BloomEffect": 1,
+  "ColorCorrectionEffect": 2,
+  "Decal": 650,
+  "DepthOfFieldEffect": 2,
+  "Folder": 772,
+  "Sky": 3,
+  "SunRaysEffect": 1,
+  "BlurEffect": 1,
+  "LocalizationService": 1,
+  "MaterialService": 1,
+  "MaterialVariant": 57,
+  "Players": 1,
+  "Script": 57,
+  "ReplicatedFirst": 1,
+  "BoolValue": 33,
+  "LocalScript": 164,
+  "ReplicatedStorage": 1,
+  "ModuleScript": 977,
+  "StringValue": 106,
+  "AnimationGraphDefinition": 1,
+  "AnimationNodeDefinition": 1,
+  "Configuration": 2,
+  "Animation": 763,
+  "BindableEvent": 61,
+  "BindableFunction": 6,
+  "RemoteEvent": 109,
+  "RemoteFunction": 40,
+  "Model": 1615,
+  "BodyColors": 36,
+  "Part": 5451,
+  "Attachment": 4414,
+  "SpecialMesh": 131,
+  "Humanoid": 39,
+  "Motor6D": 957,
+  "Accessory": 54,
+  "Weld": 770,
+  "Vector3Value": 246,
+  "ParticleEmitter": 7666,
+  "MeshPart": 4906,
+  "PointLight": 363,
+  "UnionOperation": 77,
+  "SurfaceAppearance": 774,
+  "Trail": 199,
+  "Sound": 1102,
+  "CFrameValue": 181,
+  "AnimationController": 37,
+  "Animator": 64,
+  "BillboardGui": 78,
+  "ImageLabel": 2544,
+  "TextLabel": 3940,
+  "UIGradient": 3592,
+  "UIStroke": 6187,
+  "ProximityPrompt": 18,
+  "Highlight": 29,
+  "TextButton": 465,
+  "UICorner": 2418,
+  "Beam": 1544,
+  "Frame": 2032,
+  "SpotLight": 41,
+  "Bone": 478,
+  "RayValue": 8,
+  "Texture": 24,
+  "UIListLayout": 332,
+  "FaceControls": 1,
+  "WrapTarget": 15,
+  "RigidConstraint": 8,
+  "Hat": 1,
+  "BlockMesh": 71,
+  "DistortionSoundEffect": 2,
+  "HumanoidDescription": 22,
+  "AccessoryDescription": 86,
+  "BodyPartDescription": 132,
+  "UIAspectRatioConstraint": 1245,
+  "UIScale": 29,
+  "PackageLink": 1,
+  "WeldConstraint": 147,
+  "NumberValue": 21,
+  "SurfaceGui": 44,
+  "UIShadow": 21,
+  "SurfaceLight": 18,
+  "ManualWeld": 5,
+  "UnreliableRemoteEvent": 1,
+  "ObjectValue": 18,
+  "ChorusSoundEffect": 1,
+  "ReverbSoundEffect": 2,
+  "EqualizerSoundEffect": 3,
+  "ScreenGui": 33,
+  "ImageButton": 283,
+  "UISizeConstraint": 36,
+  "UIPadding": 793,
+  "TextBox": 35,
+  "ScrollingFrame": 46,
+  "SoundService": 1,
+  "AudioDeviceOutput": 1,
+  "SoundGroup": 1,
+  "StarterGui": 1,
+  "UIGridLayout": 24,
+  "UITextSizeConstraint": 12,
+  "UIFlexItem": 12,
+  "CanvasGroup": 5,
+  "VideoFrame": 7,
+  "StarterPack": 1,
+  "StarterPlayer": 1,
+  "StarterCharacterScripts": 1,
+  "StarterPlayerScripts": 1,
+  "Teams": 1,
+  "Team": 3,
+  "TextChatService": 1,
+  "BubbleChatConfiguration": 1,
+  "ChannelTabsConfiguration": 1,
+  "ChatInputBarConfiguration": 1,
+  "ChatWindowConfiguration": 1,
+  "TextChannel": 48,
+  "TextChatCommand": 10,
+  "Workspace": 1,
+  "Camera": 1,
+  "AudioListener": 1,
+  "Wire": 1,
+  "Pants": 19,
+  "CharacterMesh": 38,
+  "Shirt": 18,
+  "Fire": 1,
+  "ShirtGraphic": 2,
+  "RopeConstraint": 9,
+  "SpawnLocation": 5,
+  "Color3Value": 1,
+  "WrapTextureTransfer": 1,
+  "MakeupDescription": 1,
+  "Terrain": 1
+ },
+ "groups": {
+  "README": {
+   "count": 1,
+   "bytes": 4949
+  },
+  "ReplicatedFirst.LoadingScreenController": {
+   "count": 1,
+   "bytes": 4553
+  },
+  "ReplicatedFirst.PersistentLoaded": {
+   "count": 1,
+   "bytes": 818
+  },
+  "ReplicatedStorage.Abilities": {
+   "count": 18,
+   "bytes": 62655
+  },
+  "ReplicatedStorage.AbilityEffectClient": {
+   "count": 2,
+   "bytes": 8583
+  },
+  "ReplicatedStorage.Anims": {
+   "count": 2,
+   "bytes": 6020
+  },
+  "ReplicatedStorage.Catalogs": {
+   "count": 3,
+   "bytes": 17445
+  },
+  "ReplicatedStorage.Cmdr": {
+   "count": 14,
+   "bytes": 17371
+  },
+  "ReplicatedStorage.CmdrClient": {
+   "count": 260,
+   "bytes": 263305
+  },
+  "ReplicatedStorage.Effect": {
+   "count": 379,
+   "bytes": 1122060
+  },
+  "ReplicatedStorage.ExpensivePack": {
+   "count": 1,
+   "bytes": 458
+  },
+  "ReplicatedStorage.Extensions": {
+   "count": 10,
+   "bytes": 99859
+  },
+  "ReplicatedStorage.FX": {
+   "count": 4,
+   "bytes": 2087
+  },
+  "ReplicatedStorage.HallowsUpsell": {
+   "count": 1,
+   "bytes": 458
+  },
+  "ReplicatedStorage.Icon": {
+   "count": 21,
+   "bytes": 131301
+  },
+  "ReplicatedStorage.Knives": {
+   "count": 1,
+   "bytes": 148
+  },
+  "ReplicatedStorage.MatchmakingShared": {
+   "count": 4,
+   "bytes": 23646
+  },
+  "ReplicatedStorage.Revolvers": {
+   "count": 1,
+   "bytes": 148
+  },
+  "ReplicatedStorage.Shared": {
+   "count": 121,
+   "bytes": 712370
+  },
+  "ReplicatedStorage.Sound": {
+   "count": 1,
+   "bytes": 6874
+  },
+  "ReplicatedStorage.UFOStrafe": {
+   "count": 1,
+   "bytes": 1467
+  },
+  "ReplicatedStorage.UIFramework": {
+   "count": 3,
+   "bytes": 66939
+  },
+  "ReplicatedStorage.Util": {
+   "count": 86,
+   "bytes": 558670
+  },
+  "StarterGui.BattlePass": {
+   "count": 1,
+   "bytes": 89773
+  },
+  "StarterGui.Clans": {
+   "count": 1,
+   "bytes": 46425
+  },
+  "StarterGui.ConfirmationModal": {
+   "count": 1,
+   "bytes": 7076
+  },
+  "StarterGui.Cursor": {
+   "count": 4,
+   "bytes": 39653
+  },
+  "StarterGui.DailyGifts": {
+   "count": 1,
+   "bytes": 16284
+  },
+  "StarterGui.HUD": {
+   "count": 41,
+   "bytes": 965759
+  },
+  "StarterGui.HalloweenWheel": {
+   "count": 1,
+   "bytes": 101502
+  },
+  "StarterGui.InMatchUI": {
+   "count": 8,
+   "bytes": 168025
+  },
+  "StarterGui.InspectHUD": {
+   "count": 1,
+   "bytes": 46696
+  },
+  "StarterGui.LeaderboardServiceUI": {
+   "count": 2,
+   "bytes": 42520
+  },
+  "StarterGui.MakegoodModal": {
+   "count": 1,
+   "bytes": 11666
+  },
+  "StarterGui.MapVote": {
+   "count": 2,
+   "bytes": 20585
+  },
+  "StarterGui.Matchmaking": {
+   "count": 2,
+   "bytes": 35345
+  },
+  "StarterGui.Notifications": {
+   "count": 1,
+   "bytes": 18382
+  },
+  "StarterGui.PartyInvite": {
+   "count": 1,
+   "bytes": 18928
+  },
+  "StarterGui.PlazaServerList": {
+   "count": 2,
+   "bytes": 10540
+  },
+  "StarterGui.PlazaTeleportModal": {
+   "count": 1,
+   "bytes": 3259
+  },
+  "StarterGui.PremiumPassModal": {
+   "count": 1,
+   "bytes": 10038
+  },
+  "StarterGui.ReapersList": {
+   "count": 1,
+   "bytes": 22203
+  },
+  "StarterGui.RestartBanner": {
+   "count": 1,
+   "bytes": 4319
+  },
+  "StarterGui.Spinner": {
+   "count": 2,
+   "bytes": 109600
+  },
+  "StarterGui.StarterPackWindow": {
+   "count": 1,
+   "bytes": 13595
+  },
+  "StarterGui.TopTextGui": {
+   "count": 1,
+   "bytes": 4246
+  },
+  "StarterGui.TopbarInfo": {
+   "count": 2,
+   "bytes": 8452
+  },
+  "StarterGui.TradePlayerList": {
+   "count": 2,
+   "bytes": 54405
+  },
+  "StarterGui.WinScreen": {
+   "count": 1,
+   "bytes": 31689
+  },
+  "StarterPlayer.StarterCharacterScripts": {
+   "count": 7,
+   "bytes": 47896
+  },
+  "StarterPlayer.StarterPlayerScripts": {
+   "count": 129,
+   "bytes": 1154052
+  },
+  "Workspace.Characters": {
+   "count": 16,
+   "bytes": 2368
+  },
+  "Workspace.Horseman": {
+   "count": 1,
+   "bytes": 458
+  },
+  "Workspace.Lobby": {
+   "count": 24,
+   "bytes": 156665
+  },
+  "Workspace.PhysicalCountdownTimer": {
+   "count": 1,
+   "bytes": 148
+  },
+  "Workspace.fl8meyNPC": {
+   "count": 1,
+   "bytes": 11362
+  }
+ },
+ "suspicious": {
+  "UniversalSynSaveInstance": 1198,
+  "rawget(_G)": 46,
+  "HttpService": 27,
+  "RequestAsync/GetAsync": 3,
+  "RobloxScriptSecurity/backdoor words": 10,
+  "InvokeServer": 43,
+  "FireServer": 57,
+  "loadstring": 1
+ }
+}

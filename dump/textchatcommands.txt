@@ -1,0 +1,10 @@
+DataModel.TextChatService.MDPublicChatCommand|/public|/p
+DataModel.TextChatService.TextChatCommands.RBXClearCommand|/clear|/cls
+DataModel.TextChatService.TextChatCommands.RBXConsoleCommand|/console|
+DataModel.TextChatService.TextChatCommands.RBXEmoteCommand|/emote|/e
+DataModel.TextChatService.TextChatCommands.RBXHelpCommand|/help|/?
+DataModel.TextChatService.TextChatCommands.RBXMuteCommand|/mute|/m
+DataModel.TextChatService.TextChatCommands.RBXTeamCommand|/team|/t
+DataModel.TextChatService.TextChatCommands.RBXUnmuteCommand|/unmute|/um
+DataModel.TextChatService.TextChatCommands.RBXVersionCommand|/version|/v
+DataModel.TextChatService.TextChatCommands.RBXWhisperCommand|/whisper|/w

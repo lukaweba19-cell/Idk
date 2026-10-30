@@ -1,0 +1,552 @@
+{
+  "classCount": 133,
+  "classes": [
+    {
+      "className": "ParticleEmitter",
+      "count": 7666
+    },
+    {
+      "className": "UIStroke",
+      "count": 6187
+    },
+    {
+      "className": "Part",
+      "count": 5451
+    },
+    {
+      "className": "MeshPart",
+      "count": 4906
+    },
+    {
+      "className": "Attachment",
+      "count": 4414
+    },
+    {
+      "className": "TextLabel",
+      "count": 3940
+    },
+    {
+      "className": "UIGradient",
+      "count": 3592
+    },
+    {
+      "className": "ImageLabel",
+      "count": 2544
+    },
+    {
+      "className": "UICorner",
+      "count": 2418
+    },
+    {
+      "className": "Frame",
+      "count": 2032
+    },
+    {
+      "className": "Model",
+      "count": 1615
+    },
+    {
+      "className": "Beam",
+      "count": 1544
+    },
+    {
+      "className": "UIAspectRatioConstraint",
+      "count": 1245
+    },
+    {
+      "className": "Sound",
+      "count": 1102
+    },
+    {
+      "className": "ModuleScript",
+      "count": 977
+    },
+    {
+      "className": "Motor6D",
+      "count": 957
+    },
+    {
+      "className": "UIPadding",
+      "count": 793
+    },
+    {
+      "className": "SurfaceAppearance",
+      "count": 774
+    },
+    {
+      "className": "Folder",
+      "count": 772
+    },
+    {
+      "className": "Weld",
+      "count": 770
+    },
+    {
+      "className": "Animation",
+      "count": 763
+    },
+    {
+      "className": "Decal",
+      "count": 650
+    },
+    {
+      "className": "Bone",
+      "count": 478
+    },
+    {
+      "className": "TextButton",
+      "count": 465
+    },
+    {
+      "className": "PointLight",
+      "count": 363
+    },
+    {
+      "className": "UIListLayout",
+      "count": 332
+    },
+    {
+      "className": "ImageButton",
+      "count": 283
+    },
+    {
+      "className": "Vector3Value",
+      "count": 246
+    },
+    {
+      "className": "Trail",
+      "count": 199
+    },
+    {
+      "className": "CFrameValue",
+      "count": 181
+    },
+    {
+      "className": "LocalScript",
+      "count": 164
+    },
+    {
+      "className": "WeldConstraint",
+      "count": 147
+    },
+    {
+      "className": "BodyPartDescription",
+      "count": 132
+    },
+    {
+      "className": "SpecialMesh",
+      "count": 131
+    },
+    {
+      "className": "RemoteEvent",
+      "count": 109
+    },
+    {
+      "className": "StringValue",
+      "count": 106
+    },
+    {
+      "className": "AccessoryDescription",
+      "count": 86
+    },
+    {
+      "className": "BillboardGui",
+      "count": 78
+    },
+    {
+      "className": "UnionOperation",
+      "count": 77
+    },
+    {
+      "className": "BlockMesh",
+      "count": 71
+    },
+    {
+      "className": "Animator",
+      "count": 64
+    },
+    {
+      "className": "BindableEvent",
+      "count": 61
+    },
+    {
+      "className": "MaterialVariant",
+      "count": 57
+    },
+    {
+      "className": "Script",
+      "count": 57
+    },
+    {
+      "className": "Accessory",
+      "count": 54
+    },
+    {
+      "className": "TextChannel",
+      "count": 48
+    },
+    {
+      "className": "ScrollingFrame",
+      "count": 46
+    },
+    {
+      "className": "SurfaceGui",
+      "count": 44
+    },
+    {
+      "className": "SpotLight",
+      "count": 41
+    },
+    {
+      "className": "RemoteFunction",
+      "count": 40
+    },
+    {
+      "className": "Humanoid",
+      "count": 39
+    },
+    {
+      "className": "CharacterMesh",
+      "count": 38
+    },
+    {
+      "className": "AnimationController",
+      "count": 37
+    },
+    {
+      "className": "BodyColors",
+      "count": 36
+    },
+    {
+      "className": "UISizeConstraint",
+      "count": 36
+    },
+    {
+      "className": "TextBox",
+      "count": 35
+    },
+    {
+      "className": "BoolValue",
+      "count": 33
+    },
+    {
+      "className": "ScreenGui",
+      "count": 33
+    },
+    {
+      "className": "Highlight",
+      "count": 29
+    },
+    {
+      "className": "UIScale",
+      "count": 29
+    },
+    {
+      "className": "Texture",
+      "count": 24
+    },
+    {
+      "className": "UIGridLayout",
+      "count": 24
+    },
+    {
+      "className": "HumanoidDescription",
+      "count": 22
+    },
+    {
+      "className": "UIShadow",
+      "count": 21
+    },
+    {
+      "className": "NumberValue",
+      "count": 21
+    },
+    {
+      "className": "Pants",
+      "count": 19
+    },
+    {
+      "className": "ObjectValue",
+      "count": 18
+    },
+    {
+      "className": "ProximityPrompt",
+      "count": 18
+    },
+    {
+      "className": "SurfaceLight",
+      "count": 18
+    },
+    {
+      "className": "Shirt",
+      "count": 18
+    },
+    {
+      "className": "WrapTarget",
+      "count": 15
+    },
+    {
+      "className": "UIFlexItem",
+      "count": 12
+    },
+    {
+      "className": "UITextSizeConstraint",
+      "count": 12
+    },
+    {
+      "className": "TextChatCommand",
+      "count": 10
+    },
+    {
+      "className": "RopeConstraint",
+      "count": 9
+    },
+    {
+      "className": "RayValue",
+      "count": 8
+    },
+    {
+      "className": "RigidConstraint",
+      "count": 8
+    },
+    {
+      "className": "VideoFrame",
+      "count": 7
+    },
+    {
+      "className": "BindableFunction",
+      "count": 6
+    },
+    {
+      "className": "ManualWeld",
+      "count": 5
+    },
+    {
+      "className": "CanvasGroup",
+      "count": 5
+    },
+    {
+      "className": "SpawnLocation",
+      "count": 5
+    },
+    {
+      "className": "Sky",
+      "count": 3
+    },
+    {
+      "className": "Team",
+      "count": 3
+    },
+    {
+      "className": "EqualizerSoundEffect",
+      "count": 3
+    },
+    {
+      "className": "DistortionSoundEffect",
+      "count": 2
+    },
+    {
+      "className": "ReverbSoundEffect",
+      "count": 2
+    },
+    {
+      "className": "ColorCorrectionEffect",
+      "count": 2
+    },
+    {
+      "className": "ShirtGraphic",
+      "count": 2
+    },
+    {
+      "className": "Atmosphere",
+      "count": 2
+    },
+    {
+      "className": "DepthOfFieldEffect",
+      "count": 2
+    },
+    {
+      "className": "Configuration",
+      "count": 2
+    },
+    {
+      "className": "Players",
+      "count": 1
+    },
+    {
+      "className": "StarterPack",
+      "count": 1
+    },
+    {
+      "className": "LocalizationService",
+      "count": 1
+    },
+    {
+      "className": "StarterCharacterScripts",
+      "count": 1
+    },
+    {
+      "className": "Terrain",
+      "count": 1
+    },
+    {
+      "className": "Teams",
+      "count": 1
+    },
+    {
+      "className": "ChorusSoundEffect",
+      "count": 1
+    },
+    {
+      "className": "ChannelTabsConfiguration",
+      "count": 1
+    },
+    {
+      "className": "DataModel",
+      "count": 1
+    },
+    {
+      "className": "ReplicatedFirst",
+      "count": 1
+    },
+    {
+      "className": "WrapTextureTransfer",
+      "count": 1
+    },
+    {
+      "className": "AudioDeviceOutput",
+      "count": 1
+    },
+    {
+      "className": "BloomEffect",
+      "count": 1
+    },
+    {
+      "className": "StarterGui",
+      "count": 1
+    },
+    {
+      "className": "TextChatService",
+      "count": 1
+    },
+    {
+      "className": "AnimationGraphDefinition",
+      "count": 1
+    },
+    {
+      "className": "AnimationNodeDefinition",
+      "count": 1
+    },
+    {
+      "className": "StarterPlayer",
+      "count": 1
+    },
+    {
+      "className": "ReplicatedStorage",
+      "count": 1
+    },
+    {
+      "className": "BubbleChatConfiguration",
+      "count": 1
+    },
+    {
+      "className": "Camera",
+      "count": 1
+    },
+    {
+      "className": "SunRaysEffect",
+      "count": 1
+    },
+    {
+      "className": "SoundService",
+      "count": 1
+    },
+    {
+      "className": "StarterPlayerScripts",
+      "count": 1
+    },
+    {
+      "className": "Wire",
+      "count": 1
+    },
+    {
+      "className": "Fire",
+      "count": 1
+    },
+    {
+      "className": "ChatWindowConfiguration",
+      "count": 1
+    },
+    {
+      "className": "Chat",
+      "count": 1
+    },
+    {
+      "className": "FaceControls",
+      "count": 1
+    },
+    {
+      "className": "MakeupDescription",
+      "count": 1
+    },
+    {
+      "className": "Workspace",
+      "count": 1
+    },
+    {
+      "className": "Lighting",
+      "count": 1
+    },
+    {
+      "className": "Color3Value",
+      "count": 1
+    },
+    {
+      "className": "BlurEffect",
+      "count": 1
+    },
+    {
+      "className": "AudioListener",
+      "count": 1
+    },
+    {
+      "className": "Hat",
+      "count": 1
+    },
+    {
+      "className": "ChatInputBarConfiguration",
+      "count": 1
+    },
+    {
+      "className": "UnreliableRemoteEvent",
+      "count": 1
+    },
+    {
+      "className": "MaterialService",
+      "count": 1
+    },
+    {
+      "className": "SoundGroup",
+      "count": 1
+    },
+    {
+      "className": "PackageLink",
+      "count": 1
+    }
+  ],
+  "instanceCount": 59985,
+  "remotes": 217,
+  "root": {
+    "className": "DataModel",
+    "name": "DataModel"
+  },
+  "scripts": {
+    "byClass": {
+      "LocalScript": 164,
+      "ModuleScript": 977,
+      "Script": 57
+    },
+    "failed": {},
+    "total": 1198
+  }
+}
