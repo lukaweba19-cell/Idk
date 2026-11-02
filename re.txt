@@ -3407,8 +3407,8 @@ end
 -- ============================================================
 local function buildChatPanel()
 	local chatPanel = Instance.new("Frame")
-	chatPanel.Size = UDim2.fromOffset(370, 480)
-	chatPanel.Position = UDim2.new(0.5, -185, 0.5, -240)
+	chatPanel.Size = UDim2.fromOffset(340, 280)
+	chatPanel.Position = UDim2.new(0.5, -170, 0.5, -140)
 	chatPanel.BackgroundColor3 = BG
 	chatPanel.Visible = false
 	chatPanel.Parent = gui
@@ -3486,8 +3486,8 @@ local function buildChatPanel()
 	Instance.new("UICorner", langClear).CornerRadius = UDim.new(0, 5)
 
 	local langMenu = Instance.new("Frame")
-	langMenu.Size = UDim2.new(1, -16, 0, 240)
-	langMenu.Position = UDim2.fromOffset(8, 76)
+	langMenu.Size = UDim2.new(1, -16, 1, -146)
+	langMenu.Position = UDim2.fromOffset(8, 78)
 	langMenu.BackgroundColor3 = PANEL
 	langMenu.BorderSizePixel = 0
 	langMenu.Visible = false
@@ -3517,8 +3517,8 @@ local function buildChatPanel()
 
 	-- messages -------------------------------------------------------------
 	local chatScroll = Instance.new("ScrollingFrame")
-	chatScroll.Size = UDim2.new(1, -16, 1, -152)
-	chatScroll.Position = UDim2.fromOffset(8, 80)
+	chatScroll.Size = UDim2.new(1, -16, 1, -146)
+	chatScroll.Position = UDim2.fromOffset(8, 78)
 	chatScroll.BackgroundTransparency = 1
 	chatScroll.BorderSizePixel = 0
 	chatScroll.ScrollBarThickness = 4
