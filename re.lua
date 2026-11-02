@@ -3604,11 +3604,11 @@ local function buildChatPanel()
 				if guess ~= "en" and c >= 2 then code = guess end
 			end
 			if (CHAT.speakLang or "auto") ~= "auto" then
-				langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " ▾"
+				langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " 🔽"
 			elseif code then
-				langBtn.Text = "Reply in: " .. LANG.displayName(code) .. " ▾"
+				langBtn.Text = "Reply in: " .. LANG.displayName(code) .. " 🔽"
 			else
-				langBtn.Text = "Reply in: their language ▾"
+				langBtn.Text = "Reply in: their language  🔽"
 			end
 			local hint = "Replying to " .. reply.playerName
 			if code and code ~= "en" then
@@ -3617,11 +3617,11 @@ local function buildChatPanel()
 			replyHint.Text = hint .. " - 1 request when you send"
 			replyHint.TextColor3 = ON
 		elseif (CHAT.speakLang or "auto") == "auto" then
-			langBtn.Text = "Speak in: Auto (as typed) ▾"
+			langBtn.Text = "Speak in: Auto (as typed)  🔽"
 			replyHint.Text = "Type message (tap a line to reply, 🌐 to translate)"
 			replyHint.TextColor3 = MUTED
 		else
-			langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " ▾"
+			langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " 🔽"
 			replyHint.Text = "Your text will be translated to " .. LANG.displayName(CHAT.speakLang)
 			replyHint.TextColor3 = MUTED
 		end

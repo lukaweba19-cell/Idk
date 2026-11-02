@@ -1,6 +1,6 @@
 # Chat + translation tests
 
-The chat logic lives inside `re.txt` between the `CHAT_CORE_BEGIN` / `CHAT_CORE_END`
+The chat logic lives inside `re.lua` between the `CHAT_CORE_BEGIN` / `CHAT_CORE_END`
 markers. `chat_core.test.luau` slices that block out, loads it with stubbed Roblox
 globals (`game`, `Players`, `player`, `TextChatService`, `task`), a stubbed executor
 `request` that records every HTTP call, and a stubbed `RBXGeneral` channel that
@@ -14,7 +14,7 @@ lune run tests/chat_core.test.luau
 
 It fails with a non-zero exit code if any check fails. Covered:
 
-- `re.txt` still compiles as Luau.
+- `re.lua` still compiles as Luau.
 - Receiving chat costs **0** OpenRouter requests and is never auto-translated.
 - 🌐 on a message costs exactly **1** request (language + translation in one call);
   clicking it again only flips original/translation and costs 0.

@@ -1,8 +1,8 @@
--- Lune tests for the chat + translation core inside re.txt
+-- Lune tests for the chat + translation core inside re.lua
 --
 --   lune run tests/chat_core.test.luau
 --
--- The core is sliced out of re.txt between the CHAT_CORE markers and loaded
+-- The core is sliced out of re.lua between the CHAT_CORE markers and loaded
 -- with stubbed Roblox globals (game / Players / player / TextChatService),
 -- a stubbed executor `request` that records every HTTP call, and a stubbed
 -- RBXGeneral channel that records every sent message.
@@ -13,7 +13,7 @@ local process = require("@lune/process")
 local BEGIN = "--[[ CHAT_CORE_BEGIN ]]"
 local END_MARK = "--[[ CHAT_CORE_END ]]"
 
-local source = fs.readFile("re.txt")
+local source = fs.readFile("re.lua")
 
 local pass, fail = 0, 0
 local function check(name, cond, extra)
@@ -31,11 +31,11 @@ local okSyntax, syntaxErr = pcall(function()
 	local bytecode = luau.compile(source)
 	assert(bytecode ~= nil)
 end)
-check("re.txt compiles", okSyntax, syntaxErr)
+check("re.lua compiles", okSyntax, syntaxErr)
 
 local sPos = string.find(source, BEGIN, 1, true)
 local ePos = string.find(source, END_MARK, 1, true)
-assert(sPos and ePos and ePos > sPos, "CHAT_CORE markers not found in re.txt")
+assert(sPos and ePos and ePos > sPos, "CHAT_CORE markers not found in re.lua")
 local core = string.sub(source, sPos, ePos + #END_MARK)
 	.. "\nreturn { CHAT = CHAT, LANG = LANG, API = API }\n"
 
@@ -168,7 +168,7 @@ local function newHarness(opts)
 		OPENROUTER_MODEL = "openrouter/free",
 	}
 
-	local chunk = luau.load(core, { environment = env, debug_name = "re.txt chat core" })
+	local chunk = luau.load(core, { environment = env, debug_name = "re.lua chat core" })
 	local loaded = chunk()
 	h.CHAT, h.LANG = loaded.CHAT, loaded.LANG
 	h.CHAT.startListening() -- what the script does once its panel is built

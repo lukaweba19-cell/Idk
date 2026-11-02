@@ -142,10 +142,10 @@ Build the server against those names and the recovered client just works.
   `ReplayFormat.Source` to self-test the codec.
 - 46 modules touch `_G`/`rawget` — all are legit local caches/effect pools, not remote code loading.
 - `HttpService` references (27 files) are type references and admin `fetch` utilities; no URLs.
-- **Separate file `re.txt`** is *not* part of the place: it is a third-party cheat hub
+- **Separate file `re.lua`** is *not* part of the place: it is a third-party cheat hub
   (fly/noclip/speed, player trolls, catalog emotes) and it contains a **hardcoded OpenRouter API
   key** in plaintext. If that key is yours, rotate it now — anyone with that script can spend it.
-  Nothing in the dump depends on `re.txt`.
+  Nothing in the dump depends on `re.lua`.
 
 ## 6. Legal / practical reality check
 
