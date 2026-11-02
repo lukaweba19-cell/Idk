@@ -2319,15 +2319,51 @@ end)
 
 -- ============================================================
 -- CHAT + TRANSLATION (openrouter/free)
+--
+-- Request budget, by design. Every OpenRouter call is triggered by you:
+--   🌐 on one message ....... 1 request (identifies the language AND translates)
+--   ↩️ reply, then send ..... 1 request (translates your text into their language)
+--   "Speak in: X", then send  1 request (translates your text into X)
+-- Receiving chat, tagging a line, echo handling, de-duplication: 0 requests.
+-- A second 🌐 click only flips original <-> translation, so that is 0 requests.
+-- Nothing auto-translates in the background any more.
 -- ============================================================
+--[[ CHAT_CORE_BEGIN ]]
 local TextChatService = game:GetService("TextChatService")
 local HttpService = game:GetService("HttpService")
 
-local chatMessages = {}
-local chatMsgId = 0
-local replyTarget = nil
+local CHAT = {
+	messages = {},
+	nextId = 0,
+	replyTarget = nil,
+	speakLang = "auto", -- "auto" = send as typed, or match the message being replied to
+	sending = false,
+	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
+	pendingEcho = {}, -- signature -> local row waiting for its own echo
+	seen = {}, -- signature -> clock, kills duplicate listeners
+	notify = function() end,
+	onNew = function() end,
+	onUpdate = function() end,
+	onState = function() end,
+}
+
+local function trim(s)
+	return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- ------------------------------------------------------------------
+-- HTTP + OpenRouter
+-- ------------------------------------------------------------------
+local API = {
+	lastError = nil,
+	warned = {},
+	-- openrouter/free auto-picks a model; the rest are only tried when the
+	-- previous call actually failed, so a working call is always one request.
+	models = { OPENROUTER_MODEL, "google/gemma-4-26b-a4b-it:free", "liquid/lfm-2.5-2.6b:free" },
+}
 
 local function httpRequest(opts)
+	CHAT.apiRequests = CHAT.apiRequests + 1
 	local ok, res = pcall(function()
 		if syn and syn.request then return syn.request(opts) end
 		if http and http.request then return http.request(opts) end
@@ -2339,56 +2375,35 @@ local function httpRequest(opts)
 	return nil
 end
 
--- Every failure has to be visible: the old version returned nil for a dead key,
--- a 429 or a missing provider alike, so "translate" just looked broken.
-local API = {
-	lastError = nil,
-	warned = {},
-	models = { OPENROUTER_MODEL, "google/gemma-4-26b-a4b-it:free", "liquid/lfm-2.5-2.6b:free" },
-}
-
 function API.errorFor(status, body)
 	if status == 401 then
 		return "OpenRouter key rejected (401) - set getgenv().OPENROUTER_KEY to a valid key"
 	end
 	if status == 402 then return "OpenRouter out of credits (402)" end
-	if status == 429 then return "OpenRouter rate limited (429) - retrying shortly" end
+	if status == 429 then return "OpenRouter rate limited (429) - try again in a moment" end
 	if status == 404 then return "OpenRouter: no provider for that model (404)" end
-	local msg = body and body:match('"message"%s*:%s*"([^"]+)"')
+	local msg = body and tostring(body):match('"message"%s*:%s*"([^"]+)"')
 	return "OpenRouter HTTP " .. tostring(status) .. (msg and (": " .. msg) or "")
 end
 
 function API.report(text)
+	if not text or text == "" then return end
 	API.lastError = text
 	if API.warned[text] then return end
 	API.warned[text] = true
-	showToast(utf8.char(9888) .. " " .. text, 7)
+	CHAT.notify(utf8.char(9888) .. " " .. text)
 end
 
-function API.checkKey()
-	local res = httpRequest({
-		Url = "https://openrouter.ai/api/v1/key",
-		Method = "GET",
-		Headers = { ["Authorization"] = "Bearer " .. OPENROUTER_KEY },
-	})
-	if not res then
-		API.report("cannot reach OpenRouter - executor HTTP may be blocked")
-		return false
-	end
-	local status = res.StatusCode or res.Status or 0
-	if status == 200 then return true end
-	API.report(API.errorFor(status, res.Body))
-	return false
-end
-
+-- one logical call; a second HTTP request only happens when the first model
+-- failed (dead model / provider outage), never after a good answer
 local function callOpenRouter(systemPrompt, userPrompt)
 	local lastErr = "unknown error"
 	for _, model in ipairs(API.models) do
 		local body = HttpService:JSONEncode({
 			model = model,
 			messages = {
-				{role = "system", content = systemPrompt},
-				{role = "user", content = userPrompt}
+				{ role = "system", content = systemPrompt },
+				{ role = "user", content = userPrompt },
 			},
 			temperature = 0.2,
 			max_tokens = 500,
@@ -2414,28 +2429,21 @@ local function callOpenRouter(systemPrompt, userPrompt)
 				local content = ok and data and data.choices and data.choices[1]
 					and data.choices[1].message and data.choices[1].message.content
 				if type(content) == "string" and content ~= "" then
-					return (content:gsub("^%s+", ""):gsub("%s+$", ""))
+					return trim(content)
 				end
 				lastErr = "empty completion from " .. model
 			else
 				lastErr = API.errorFor(status, raw)
-				-- a bad key or empty wallet will not improve on the next model
+				-- a bad key or an empty wallet will not improve on another model
 				if status == 401 or status == 402 then break end
 			end
 		end
 	end
-	API.report(lastErr)
 	return nil, lastErr
 end
 
-task.spawn(function()
-	task.wait(3)
-	pcall(API.checkKey)
-end)
-
 -- ------------------------------------------------------------------
--- Language detection: local detector first (instant), AI only when the
--- text is actually not English, so English chat never waits on a request.
+-- Language detection (free, local) + the two translation calls
 -- ------------------------------------------------------------------
 local LANG = { playerLang = {} }
 
@@ -2517,7 +2525,7 @@ LANG.words = {
 
 -- English stopwords. Without them, ordinary English scored stray hits on
 -- Spanish/Italian words ("no", "son", "con", "a") and got sent to the
--- translator for no reason. English now has to lose before anything is sent.
+-- translator for no reason.
 LANG.words.en = {
 	"the", "and", "is", "are", "was", "were", "you", "your", "to", "of", "it", "its",
 	"that", "this", "these", "those", "for", "with", "have", "has", "had", "not",
@@ -2533,8 +2541,13 @@ LANG.words.en = {
 
 LANG.detectCache = {}
 LANG.translateCache = {}
-LANG.detectInflight = {}
 
+function LANG.displayName(code)
+	if not code or code == "" then return "?" end
+	return LANG.names[code] or code
+end
+
+-- 0 requests: script ranges first, then function words. Returns code, confidence.
 function LANG.detectLocal(text)
 	if not text or text == "" then return "en", 0 end
 
@@ -2579,9 +2592,7 @@ function LANG.detectLocal(text)
 		end
 	end
 	local enScore = wordScore(LANG.words.en)
-	-- Only answer with a language when there is real evidence for it. A couple
-	-- of shared short words is not evidence, and guessing here is what made
-	-- perfectly normal English get "translated" into something else.
+	-- Only answer with a language when there is real evidence for it.
 	if bestLang and bestScore >= 2 and bestScore > enScore then
 		if bestScore >= 3 or bestScore >= enScore + 2 then
 			return bestLang, 2
@@ -2596,7 +2607,8 @@ function LANG.remember(userId, lang)
 	end
 end
 
-function LANG.apiDetectTranslate(text, hint)
+-- 1 request: language of a message plus its English translation, in one answer.
+function API.detectAndTranslate(text, hint)
 	local system = [[You are a precise language identifier and translator.
 Read the user's message and reply in EXACTLY this format, nothing else:
 LANG: <ISO 639-1 code of the message's own language>
@@ -2619,442 +2631,263 @@ message. Do not add notes.]]
 		lang = LANG.codes[lang] or lang
 	end
 	if translation then
-		translation = translation:gsub("^%s+", ""):gsub("%s+$", ""):gsub('^"(.*)"$', "%1")
+		translation = trim(translation):gsub('^"(.*)"$', "%1")
 	elseif lang then
 		local rest = result:gsub("^.-LANG:[^\r\n]*[\r\n]*", ""):gsub("TRANSLATION:%s*", "")
-		rest = rest:gsub("^%s+", ""):gsub("%s+$", "")
+		rest = trim(rest)
 		if rest ~= "" then translation = rest end
 	end
 	return lang, translation, nil
 end
 
-function LANG.translateText(text, targetLang, force)
-	if not text or text == "" or not targetLang then return nil, nil end
-	local key = targetLang .. "\0" .. text
-	if not force then
-		local cached = LANG.translateCache[key]
-		if cached then return cached, nil end
-	end
-	local name = LANG.names[targetLang] or targetLang
-	local system = "Translate the user's message into " .. name .. " (" .. targetLang .. "). "
+-- 1 request: translate into a known language.
+function API.translate(text, langCode)
+	local name = LANG.displayName(langCode)
+	local system = "Translate the user's message into " .. name .. " (" .. langCode .. "). "
 		.. "Reply with ONLY the translated sentence: no quotes, no notes, no language tags. "
 		.. "Keep slang, tone and names. If it is already in " .. name .. ", repeat it unchanged."
 	local out, err = callOpenRouter(system, text)
+	if not out or out == "" then return nil, err or "translation failed" end
+	return trim(out):gsub('^"(.*)"$', "%1")
+end
+
+-- 1 request: translate a reply into the language of the message it answers.
+-- Doing both in one call is what keeps a reply at exactly one request.
+function API.translateLike(text, original)
+	local system = [[You are a translator inside a game chat.
+The user is answering a message written in another language. Translate the
+user's answer into that same language. Keep slang, tone and names.
+Reply in EXACTLY this format, nothing else:
+LANG: <ISO 639-1 code of the language you translated into>
+TRANSLATION: <the translated answer, one line>]]
+	local user = "Message being answered:\n" .. original .. "\n\nMy answer:\n" .. text
+	local result, err = callOpenRouter(system, user)
+	if not result then return nil, nil, err or "translation failed" end
+	result = result:gsub("```%w*", ""):gsub("```", ""):gsub("%*%*", "")
+	local lang = result:match("LANG:%s*([%a%-]+)")
+	local out = result:match("TRANSLATION:%s*([^\r\n]+)")
+	if lang then
+		lang = lang:lower():gsub("%s+", "")
+		lang = LANG.codes[lang] or lang
+	end
+	if not out then
+		local rest = result:gsub("^.-LANG:[^\r\n]*[\r\n]*", ""):gsub("TRANSLATION:%s*", "")
+		rest = trim(rest)
+		if rest ~= "" then out = rest end
+	end
+	if not out then return nil, lang, err or "no translation returned" end
+	return trim(out):gsub('^"(.*)"$', "%1"), lang, nil
+end
+
+-- internal: manual 🌐 click = 1 request, cached afterwards (0 requests)
+function LANG.detectAndTranslate(text)
+	local cached = LANG.detectCache[text]
+	if cached then return cached.lang, cached.translation, nil end
+
+	local guess, conf = LANG.detectLocal(text)
+	local lang, translation, err = API.detectAndTranslate(text, guess)
+	if not lang or lang == "" then
+		return nil, nil, err or "detection failed"
+	end
+	-- a non-Latin script outranks the model calling it English
+	if conf >= 3 and guess ~= "en" then lang = guess end
+	translation = translation or text
+	LANG.detectCache[text] = { lang = lang, translation = translation }
+	LANG.translateCache[lang .. "|" .. text] = translation
+	return lang, translation, nil
+end
+
+-- internal: outgoing text -> target language (0 or 1 request)
+function LANG.translateTo(text, targetLang)
+	local key = targetLang .. "|" .. text
+	local cached = LANG.translateCache[key]
+	if cached then return cached, nil end
+	local out, err = API.translate(text, targetLang)
 	if out and out ~= "" then
-		out = out:gsub("^%s+", ""):gsub("%s+$", ""):gsub('^"(.*)"$', "%1")
 		LANG.translateCache[key] = out
 		return out, nil
 	end
-	return nil, err or "translation failed"
+	return nil, err
 end
 
-function LANG.detectAndTranslate(text, force)
-	if not text or text == "" then return "en", text, nil end
-	if not force then
-		local cached = LANG.detectCache[text]
-		if cached then return cached.lang, cached.translation, cached.err end
-	end
+-- ------------------------------------------------------------------
+-- Message bookkeeping
+-- ------------------------------------------------------------------
+local function localName()
+	return player.DisplayName or player.Name
+end
 
-	if not force and LANG.detectInflight[text] then
-		local waited = 0
-		while LANG.detectInflight[text] and waited < 8 do
-			task.wait(0.1)
-			waited = waited + 0.1
+local function prune()
+	local t = os.clock()
+	if #CHAT.messages > 60 then
+		local keep = {}
+		for i = #CHAT.messages - 49, #CHAT.messages do
+			if CHAT.messages[i] then keep[#keep + 1] = CHAT.messages[i] end
 		end
-		local again = LANG.detectCache[text]
-		if again then return again.lang, again.translation, again.err end
+		CHAT.messages = keep
 	end
-
-	local lang, confidence = LANG.detectLocal(text)
-	local translation = text
-	local err = nil
-
-	-- Nothing but English detected: answer immediately. No request, no extra
-	-- API spend, no "translated" label on a line that was already English. The
-	-- globe button passes force=true, so a manual click still asks the model.
-	if confidence == 0 and not force then
-		LANG.detectCache[text] = { lang = "en", translation = text, err = nil }
-		return "en", text, nil
+	for sig, when in pairs(CHAT.seen) do
+		if t - when > 30 then CHAT.seen[sig] = nil end
 	end
-
-	LANG.detectInflight[text] = true
-	-- one request does both jobs: identify the language and translate it
-	local apiLang, apiTranslation, apiErr = LANG.apiDetectTranslate(text, lang)
-	err = apiErr
-	if apiLang and apiLang ~= "" then
-		-- Only a non-Latin script may overrule the model saying "English";
-		-- a word-list guess may not, or replies go out in the wrong language.
-		if confidence >= 3 or apiLang ~= "en" then
-			lang = apiLang
-		end
-	end
-	if apiTranslation and apiTranslation ~= "" and apiTranslation ~= text then
-		translation = apiTranslation
-		err = nil
-	elseif lang ~= "en" then
-		local t, terr = LANG.translateText(text, "en", force)
-		translation = t or text
-		err = err or terr
-	end
-
-	LANG.detectInflight[text] = nil
-	LANG.detectCache[text] = { lang = lang, translation = translation, err = err }
-	return lang, translation, err
 end
 
-function LANG.translateToLang(englishText, targetLang, force)
-	if not targetLang or targetLang == "en" then return englishText, nil end
-	local out, err = LANG.translateText(englishText, targetLang, force)
-	return out or englishText, err
-end
+-- 0 requests. Adds a chat line; only tags it with the free local guess.
+function CHAT.pushMessage(playerName, userId, text)
+	if type(text) ~= "string" then return nil end
+	text = trim(text)
+	if text == "" then return nil end
 
-local chatPanel = Instance.new("Frame")
-chatPanel.Size = UDim2.fromOffset(360, 400)
-chatPanel.Position = UDim2.new(0.5, -180, 0.5, -200)
-chatPanel.BackgroundColor3 = BG
-chatPanel.Visible = false
-chatPanel.Parent = gui
-Instance.new("UICorner", chatPanel).CornerRadius = UDim.new(0, 12)
-Instance.new("UIStroke", chatPanel).Color = PURPLE
+	local mine = (userId == player.UserId)
+		or (userId == 0 and playerName == localName())
+		or (userId == nil and playerName == localName())
 
-local cHeader = Instance.new("Frame")
-cHeader.Size = UDim2.new(1, 0, 0, 40)
-cHeader.BackgroundColor3 = PANEL
-cHeader.BorderSizePixel = 0
-cHeader.Parent = chatPanel
-Instance.new("UICorner", cHeader).CornerRadius = UDim.new(0, 12)
-local cHeaderFix = Instance.new("Frame")
-cHeaderFix.Size = UDim2.new(1, 0, 0, 12)
-cHeaderFix.Position = UDim2.new(0, 0, 1, -12)
-cHeaderFix.BackgroundColor3 = PANEL
-cHeaderFix.BorderSizePixel = 0
-cHeaderFix.Parent = cHeader
-
-local cTitle = Instance.new("TextLabel")
-cTitle.BackgroundTransparency = 1
-cTitle.Size = UDim2.new(1, -110, 1, 0)
-cTitle.Position = UDim2.fromOffset(14, 0)
-cTitle.Font = Enum.Font.GothamBold
-cTitle.TextSize = 15
-cTitle.TextColor3 = PURPLE
-cTitle.TextXAlignment = Enum.TextXAlignment.Left
-cTitle.Text = "Chat + Translate"
-cTitle.Parent = cHeader
-
-local cClose = Instance.new("TextButton")
-cClose.Size = UDim2.fromOffset(48, 28)
-cClose.Position = UDim2.new(1, -56, 0.5, -14)
-cClose.BackgroundColor3 = PURPLE_DIM
-cClose.Text = "Close"
-cClose.TextSize = 12
-cClose.Font = Enum.Font.GothamBold
-cClose.TextColor3 = TEXT
-cClose.Parent = cHeader
-Instance.new("UICorner", cClose).CornerRadius = UDim.new(0, 6)
-
-local chatScroll = Instance.new("ScrollingFrame")
-chatScroll.Size = UDim2.new(1, -16, 1, -120)
-chatScroll.Position = UDim2.fromOffset(8, 48)
-chatScroll.BackgroundTransparency = 1
-chatScroll.BorderSizePixel = 0
-chatScroll.ScrollBarThickness = 4
-chatScroll.ScrollBarImageColor3 = PURPLE
-chatScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-chatScroll.Parent = chatPanel
-local chatLayout = Instance.new("UIListLayout")
-chatLayout.Padding = UDim.new(0, 6)
-chatLayout.SortOrder = Enum.SortOrder.LayoutOrder
-chatLayout.Parent = chatScroll
-chatLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-	chatScroll.CanvasSize = UDim2.new(0, 0, 0, chatLayout.AbsoluteContentSize.Y + 8)
-	chatScroll.CanvasPosition = Vector2.new(0, math.max(0, chatLayout.AbsoluteContentSize.Y - chatScroll.AbsoluteSize.Y))
-end)
-
-local replyBar = Instance.new("Frame")
-replyBar.Size = UDim2.new(1, -16, 0, 56)
-replyBar.Position = UDim2.new(0, 8, 1, -64)
-replyBar.BackgroundColor3 = PANEL
-replyBar.Parent = chatPanel
-Instance.new("UICorner", replyBar).CornerRadius = UDim.new(0, 8)
-
-local replyHint = Instance.new("TextLabel")
-replyHint.BackgroundTransparency = 1
-replyHint.Size = UDim2.new(1, -16, 0, 14)
-replyHint.Position = UDim2.fromOffset(8, 2)
-replyHint.Font = Enum.Font.Gotham
-replyHint.TextSize = 10
-replyHint.TextColor3 = MUTED
-replyHint.TextXAlignment = Enum.TextXAlignment.Left
-replyHint.Text = "Type message (or reply to selected)..."
-replyHint.Parent = replyBar
-
-local replyBox = Instance.new("TextBox")
-replyBox.Size = UDim2.new(1, -70, 0, 28)
-replyBox.Position = UDim2.fromOffset(8, 20)
-replyBox.BackgroundColor3 = BG
-replyBox.TextColor3 = TEXT
-replyBox.PlaceholderColor3 = MUTED
-replyBox.PlaceholderText = "Say something..."
-replyBox.Font = Enum.Font.Gotham
-replyBox.TextSize = 13
-replyBox.Text = ""
-replyBox.ClearTextOnFocus = false
-replyBox.Parent = replyBar
-Instance.new("UICorner", replyBox).CornerRadius = UDim.new(0, 6)
-
-local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.fromOffset(50, 28)
-sendBtn.Position = UDim2.new(1, -58, 0, 20)
-sendBtn.BackgroundColor3 = PURPLE
-sendBtn.Text = "Send"
-sendBtn.Font = Enum.Font.GothamBold
-sendBtn.TextSize = 12
-sendBtn.TextColor3 = TEXT
-sendBtn.Parent = replyBar
-Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0, 6)
-
-local function setChatOpen(state)
-	chatOpen = state
-	chatPanel.Visible = chatOpen
-	chatBtn.BackgroundColor3 = chatOpen and PURPLE_DIM or PURPLE
-end
-chatBtn.MouseButton1Click:Connect(function()
-	setChatOpen(not chatOpen)
-end)
-cClose.MouseButton1Click:Connect(function()
-	setChatOpen(false)
-end)
-makeDraggable(cHeader, chatPanel)
-
-local function addMessageRow(msg)
-	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, -4, 0, 0)
-	row.AutomaticSize = Enum.AutomaticSize.Y
-	row.BackgroundColor3 = PANEL
-	row.Parent = chatScroll
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
-	local pad = Instance.new("UIPadding", row)
-	pad.PaddingTop = UDim.new(0, 6)
-	pad.PaddingBottom = UDim.new(0, 6)
-	pad.PaddingLeft = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
-
-	local nameLbl = Instance.new("TextLabel")
-	nameLbl.BackgroundTransparency = 1
-	nameLbl.Size = UDim2.new(1, -70, 0, 16)
-	nameLbl.Font = Enum.Font.GothamBold
-	nameLbl.TextSize = 12
-	nameLbl.TextColor3 = PURPLE
-	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-	nameLbl.Text = msg.playerName .. (msg.lang and msg.lang ~= "en" and ("  [" .. msg.lang .. "]") or "")
-	nameLbl.Parent = row
-
-	local textLbl = Instance.new("TextLabel")
-	textLbl.BackgroundTransparency = 1
-	textLbl.Size = UDim2.new(1, 0, 0, 0)
-	textLbl.AutomaticSize = Enum.AutomaticSize.Y
-	textLbl.Position = UDim2.fromOffset(0, 18)
-	textLbl.Font = Enum.Font.Gotham
-	textLbl.TextSize = 13
-	textLbl.TextColor3 = TEXT
-	textLbl.TextXAlignment = Enum.TextXAlignment.Left
-	textLbl.TextWrapped = true
-	textLbl.Text = msg.display
-	textLbl.Parent = row
-
-	msg._nameLbl = nameLbl
-	msg._textLbl = textLbl
-
-	local trBtn = Instance.new("TextButton")
-	trBtn.Size = UDim2.fromOffset(28, 22)
-	trBtn.Position = UDim2.new(1, -60, 0, 0)
-	trBtn.BackgroundColor3 = PURPLE_DIM
-	trBtn.Text = "🌐"
-	trBtn.TextSize = 12
-	trBtn.Font = Enum.Font.GothamBold
-	trBtn.TextColor3 = TEXT
-	trBtn.Parent = row
-	Instance.new("UICorner", trBtn).CornerRadius = UDim.new(0, 4)
-
-	local rpBtn = Instance.new("TextButton")
-	rpBtn.Size = UDim2.fromOffset(28, 22)
-	rpBtn.Position = UDim2.new(1, -28, 0, 0)
-	rpBtn.BackgroundColor3 = PURPLE_DIM
-	rpBtn.Text = "↩️"
-	rpBtn.TextSize = 12
-	rpBtn.Font = Enum.Font.GothamBold
-	rpBtn.TextColor3 = TEXT
-	rpBtn.Parent = row
-	Instance.new("UICorner", rpBtn).CornerRadius = UDim.new(0, 4)
-
-	trBtn.MouseButton1Click:Connect(function()
-		trBtn.Text = "..."
-		-- tag the language instantly, then fill in the translation
-		local quick = msg.lang or select(1, LANG.detectLocal(msg.original))
-		if msg._nameLbl then
-			msg._nameLbl.Text = msg.playerName .. (quick ~= "en" and ("  [" .. quick .. "]") or "")
-		end
-		task.spawn(function()
-			-- force: a manual click must never hand back a cached failure
-			local lang, translation, err = LANG.detectAndTranslate(msg.original, true)
-			msg.lang = lang
-			LANG.remember(msg.userId, lang)
-			if translation and translation ~= "" and translation ~= msg.original then
-				msg.translated = translation
-				msg.display = translation
-				if msg._textLbl then
-					msg._textLbl.Text = translation
-					msg._textLbl.TextColor3 = TEXT
-				end
-			elseif lang ~= "en" then
-				if msg._textLbl then
-					msg._textLbl.Text = msg.original .. "\n" .. utf8.char(9888) .. " " .. (err or "no translation returned")
-					msg._textLbl.TextColor3 = RED
-				end
-				if err then showToast(utf8.char(9888) .. " " .. err, 7) end
+	-- our own line coming back from the server: the panel already has that row
+	if mine then
+		local now = os.clock()
+		for sig, pend in pairs(CHAT.pendingEcho) do
+			local fresh = pend.msg ~= nil and (now - pend.t) < 25
+			local sameLine = sig:sub(-#text) == text
+			if fresh and (sameLine or text:match("^[#%*]+$")) then
+				CHAT.pendingEcho[sig] = nil
+				CHAT.seen[sig] = now
+				pend.msg.sent = true
+				CHAT.onUpdate(pend.msg)
+				return pend.msg
 			end
-			if msg._nameLbl then
-				msg._nameLbl.Text = msg.playerName .. (lang ~= "en" and ("  [" .. lang .. "]") or "")
-			end
-			trBtn.Text = "🌐"
-		end)
-	end)
-
-	rpBtn.MouseButton1Click:Connect(function()
-		replyTarget = msg
-		-- resolve the language now: last seen for that player, else local detect
-		local known = msg.lang or LANG.playerLang[msg.userId]
-		if not known and msg.original then
-			known = select(1, LANG.detectLocal(msg.original))
-			if known ~= "en" then LANG.remember(msg.userId, known) end
 		end
-		if known then msg.lang = known end
-		replyHint.Text = "Replying in " .. (LANG.names[known] or known or "?") .. " — auto-translate"
-		replyHint.TextColor3 = ON
-		replyBox:CaptureFocus()
-		if not msg.lang and msg.original then
-			task.spawn(function()
-				local lang = select(1, LANG.detectAndTranslate(msg.original))
-				msg.lang = lang
-				LANG.remember(msg.userId, lang)
-				if replyTarget == msg then
-					replyHint.Text = "Replying in " .. (LANG.names[lang] or lang) .. " — auto-translate"
-				end
-			end)
-		end
-	end)
-end
-
-local function pushMessage(playerName, userId, text)
-	if not text or #text == 0 then return end
-	-- skip pure filter placeholders if that's all we got, still show them tagged
-	chatMsgId = chatMsgId + 1
-	local display = text
-	if text:match("^[#%*]+$") then
-		display = text .. "  (filtered by Roblox)"
 	end
+
+	-- the same line arriving twice (modern chat + legacy chat, or two listeners)
+	local sig = tostring(userId) .. "|" .. text
+	local seen = CHAT.seen[sig]
+	if seen and os.clock() - seen < 3 then return nil end
+	CHAT.seen[sig] = os.clock()
+
+	CHAT.nextId = CHAT.nextId + 1
 	local msg = {
-		id = chatMsgId,
-		playerName = playerName,
-		userId = userId,
+		id = CHAT.nextId,
+		playerName = playerName or "?",
+		userId = userId or 0,
 		original = text,
-		display = display,
+		display = text,
 		lang = nil,
+		langHint = nil,
 		translated = nil,
+		state = "original",
+		mine = mine,
+		sent = mine or nil,
 	}
-	table.insert(chatMessages, msg)
-	addMessageRow(msg)
 
-	-- local detection is instant, so every message gets tagged immediately and
-	-- the AI is only asked when the text is not English. My own lines are never
-	-- checked at all: they went out in the language I typed them in.
-	if not text:match("^[#%*]+$") and userId ~= player.UserId then
-		task.spawn(function()
-			local lang, translation, err = LANG.detectAndTranslate(text)
-			msg.lang = lang
-			LANG.remember(userId, lang)
-			if msg._nameLbl then
-				msg._nameLbl.Text = msg.playerName .. (lang ~= "en" and ("  [" .. lang .. "]") or "")
-			end
-			if lang ~= "en" then
-				if translation and translation ~= text then
-					msg.translated = translation
-					msg.display = translation
-					if msg._textLbl then
-						msg._textLbl.Text = translation
-						msg._textLbl.TextColor3 = TEXT
-					end
-				elseif msg._textLbl then
-					-- keep the original visible but say why it is untranslated
-					msg._textLbl.Text = text .. (err and ("\n" .. utf8.char(9888) .. " " .. err) or "")
-					if err then msg._textLbl.TextColor3 = RED end
-				end
-			end
-		end)
+	-- free tagging only: nothing here talks to OpenRouter
+	if not mine then
+		local guess, conf = LANG.detectLocal(text)
+		if guess ~= "en" and conf >= 2 then
+			msg.langHint = guess
+		end
 	end
+	if text:match("^[#%*]+$") then
+		msg.display = text .. "  (filtered by Roblox)"
+	end
+
+	CHAT.messages[#CHAT.messages + 1] = msg
+	prune()
+	CHAT.onNew(msg)
+	return msg
 end
 
--- Modern TextChatService
-pcall(function()
-	TextChatService.MessageReceived:Connect(function(textChatMessage)
-		if not textChatMessage or not textChatMessage.TextSource then return end
-		local src = textChatMessage.TextSource
-		local plr = Players:GetPlayerByUserId(src.UserId)
-		local name = plr and (plr.DisplayName or plr.Name) or ("User" .. tostring(src.UserId))
-		local text = textChatMessage.Text
-		if text and #text > 0 then
-			pushMessage(name, src.UserId, text)
-		end
-	end)
-end)
+-- 0 requests: remembers which message you are answering.
+function CHAT.replyTo(msg)
+	if not msg then return end
+	CHAT.replyTarget = msg
+	CHAT.onState()
+end
 
--- Also try OnIncomingMessage for potentially less-filtered text
-pcall(function()
-	TextChatService.OnIncomingMessage = function(message)
-		-- don't block, just observe; return nil to keep default
-		return nil
-	end
-end)
+function CHAT.clearReply()
+	CHAT.replyTarget = nil
+	CHAT.onState()
+end
 
--- Legacy chat fallback
-pcall(function()
-	local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-	if chatEvents then
-		local msgDone = chatEvents:FindFirstChild("OnMessageDoneFiltering")
-		if msgDone then
-			msgDone.OnClientEvent:Connect(function(data)
-				if type(data) == "table" and data.Message and data.FromSpeaker then
-					pushMessage(data.FromSpeaker, data.SpeakerUserId or 0, data.Message)
-				end
-			end)
-		end
-	end
-end)
+-- 0 requests: the language selector.
+function CHAT.setSpeakLang(code)
+	CHAT.speakLang = code or "auto"
+	CHAT.onState()
+end
 
-local function sendChatMessage(text)
-	if not text or #text == 0 then return end
-	local toSend = text
-	-- the reply always goes out in the language of the message being replied
-	-- to; if it was never detected, detect it before translating
-	local targetLang = nil
-	if replyTarget then
-		targetLang = replyTarget.lang or LANG.playerLang[replyTarget.userId]
-		if not targetLang and replyTarget.original then
-			targetLang = select(1, LANG.detectAndTranslate(replyTarget.original))
-			replyTarget.lang = targetLang
-			LANG.remember(replyTarget.userId, targetLang)
-		end
+-- 0 requests: works out what the next message should be sent as.
+-- target = language code when it is known, inferFrom = the message whose
+-- language has to be worked out by the single translation request.
+function CHAT.outTarget()
+	local reply = CHAT.replyTarget
+	local speak = CHAT.speakLang or "auto"
+
+	if speak ~= "auto" then
+		if speak == "en" then return nil, nil end
+		return speak, nil
 	end
-	if targetLang and targetLang ~= "en" then
-		replyHint.Text = "Translating reply to " .. (LANG.names[targetLang] or targetLang) .. "…"
-		replyHint.TextColor3 = MUTED
-		local translated, terr = LANG.translateToLang(text, targetLang, true)
-		if translated and translated ~= "" and translated ~= text then
-			toSend = translated
-		else
-			showToast("⚠ Could not translate to " .. (LANG.names[targetLang] or targetLang) .. (terr and (" - " .. terr) or ""), 8)
-		end
+	if not reply then return nil, nil end
+
+	local remembered = reply.lang or LANG.playerLang[reply.userId]
+	if remembered then
+		if remembered == "en" then return nil, nil end
+		return remembered, nil
 	end
+
+	local guess, conf = LANG.detectLocal(reply.original)
+	if guess ~= "en" and conf >= 2 then return guess, nil end
+	return nil, reply.original
+end
+
+-- 0 or 1 request: returns the exact text to send, the language used, an error.
+function CHAT.buildOutgoing(text, target, inferFrom)
+	if inferFrom then
+		local out, lang, err = API.translateLike(text, inferFrom)
+		if out and out ~= "" then
+			return out, lang or target, nil
+		end
+		return text, target, err
+	end
+	if not target or target == "en" then
+		return text, "en", nil -- nothing to translate: no request
+	end
+	local guess = LANG.detectLocal(text)
+	if guess == target then
+		return text, target, nil -- already written in that language: no request
+	end
+	local out, err = LANG.translateTo(text, target)
+	if out and out ~= "" then
+		return out, target, nil
+	end
+	return text, target, err
+end
+
+-- 0 requests: puts our line in the panel and sends it exactly once.
+function CHAT.dispatch(toSend, lang)
+	toSend = trim(toSend)
+	if toSend == "" then return false end
+
+	local sig = tostring(player.UserId) .. "|" .. toSend
+
+	CHAT.nextId = CHAT.nextId + 1
+	local msg = {
+		id = CHAT.nextId,
+		playerName = localName(),
+		userId = player.UserId,
+		original = toSend,
+		display = toSend,
+		lang = lang,
+		langHint = (lang and lang ~= "en") and lang or nil,
+		state = "original",
+		mine = true,
+		sent = false,
+	}
+	-- registered before SendAsync yields, so the echo the server sends back
+	-- finds this row instead of adding a second copy of it
+	CHAT.pendingEcho[sig] = { userId = player.UserId, msg = msg, t = os.clock() }
+
+	CHAT.messages[#CHAT.messages + 1] = msg
+	prune()
+	CHAT.onNew(msg)
+
 	local sent = false
 	pcall(function()
 		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
@@ -3065,37 +2898,582 @@ local function sendChatMessage(text)
 	end)
 	if not sent then
 		pcall(function()
-			local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-			if chatEvents then
-				local say = chatEvents:FindFirstChild("SayMessageRequest")
-				if say then
-					say:FireServer(toSend, "All")
-					sent = true
-				end
+			local rs = game:GetService("ReplicatedStorage")
+			local events = rs:FindFirstChild("DefaultChatSystemChatEvents")
+			local say = events and events:FindFirstChild("SayMessageRequest")
+			if say then
+				say:FireServer(toSend, "All")
+				sent = true
 			end
 		end)
 	end
-	pushMessage(player.DisplayName or player.Name, player.UserId, toSend)
-	replyTarget = nil
-	replyHint.Text = "Type message (or reply to selected)..."
-	replyHint.TextColor3 = MUTED
-	replyBox.Text = ""
+	if not sent then
+		CHAT.pendingEcho[sig] = nil
+		msg.display = toSend .. "  (not sent - chat channel unavailable)"
+		CHAT.onUpdate(msg)
+		return false
+	end
+	msg.sent = true
+	CHAT.onUpdate(msg)
+	return true
 end
 
-sendBtn.MouseButton1Click:Connect(function()
-	local t = replyBox.Text
-	if t and #t > 0 then
-		task.spawn(function() sendChatMessage(t) end)
+-- Exactly one send per press: the guard is set before any yielding starts,
+-- so a double Enter / a click on Send can never send the same line twice.
+function CHAT.enqueueSend(text)
+	text = trim(text)
+	if text == "" then return false end
+	if CHAT.sending then return false end
+
+	local target, inferFrom = CHAT.outTarget()
+	local reply = CHAT.replyTarget
+	CHAT.sending = true
+	CHAT.replyTarget = nil
+	CHAT.onState()
+
+	task.spawn(function()
+		local ok, err = pcall(function()
+			local toSend, usedLang, terr = CHAT.buildOutgoing(text, target, inferFrom)
+			if terr then
+				CHAT.notify(utf8.char(9888) .. " Could not translate to "
+					.. LANG.displayName(usedLang) .. ": " .. tostring(terr))
+			end
+			if not CHAT.dispatch(toSend, usedLang) then
+				CHAT.notify(utf8.char(9888) .. " Message was not sent")
+			end
+			if reply and usedLang and usedLang ~= "en" then
+				LANG.remember(reply.userId, usedLang)
+			end
+		end)
+		if not ok and err then
+			CHAT.notify(utf8.char(9888) .. " Send failed: " .. tostring(err))
+		end
+		CHAT.sending = false
+		CHAT.onState()
+	end)
+	return true
+end
+
+-- 1 request the first time, 0 after (it just flips back to the original).
+function CHAT.manualTranslate(msg)
+	if not msg or msg.busy then return end
+
+	if msg.translated then
+		msg.state = (msg.state == "translated") and "original" or "translated"
+		msg.err = nil
+		CHAT.onUpdate(msg)
+		return
 	end
-end)
-replyBox.FocusLost:Connect(function(enter)
-	if enter then
-		local t = replyBox.Text
-		if t and #t > 0 then
-			task.spawn(function() sendChatMessage(t) end)
+
+	local cached = LANG.detectCache[msg.original]
+	if cached and cached.lang and cached.lang ~= "en" and cached.translation
+		and cached.translation ~= msg.original then
+		msg.lang = cached.lang
+		msg.translated = cached.translation
+		msg.state = "translated"
+		msg.err = nil
+		CHAT.onUpdate(msg)
+		return
+	end
+
+	msg.busy = true
+	CHAT.onUpdate(msg)
+
+	task.spawn(function()
+		local lang, translation, err = LANG.detectAndTranslate(msg.original) -- 1 request
+		msg.busy = false
+		if lang and lang ~= "" then
+			msg.lang = lang
+			LANG.remember(msg.userId, lang)
+		end
+		if translation and translation ~= "" and translation ~= msg.original then
+			msg.translated = translation
+			msg.state = "translated"
+			msg.err = nil
+		elseif lang == "en" then
+			msg.state = "original"
+			msg.err = nil
+			CHAT.notify("That message is already English")
+		else
+			msg.state = "error"
+			msg.err = err or "no translation returned"
+			if err then API.report(err) end
+		end
+		CHAT.onUpdate(msg)
+	end)
+end
+
+-- One listener only. Attaching both chat systems at once is what made every
+-- line show up twice (and cost a translation request for each copy).
+function CHAT.startListening()
+	pcall(function()
+		TextChatService.MessageReceived:Connect(function(textChatMessage)
+			if not textChatMessage or not textChatMessage.TextSource then return end
+			local src = textChatMessage.TextSource
+			local plr = Players:GetPlayerByUserId(src.UserId)
+			local name = plr and (plr.DisplayName or plr.Name) or ("User" .. tostring(src.UserId))
+			CHAT.pushMessage(name, src.UserId, textChatMessage.Text)
+		end)
+	end)
+
+	local modern = true
+	pcall(function()
+		modern = TextChatService.ChatVersion == Enum.ChatVersion.TextChatService
+	end)
+	if modern then return end
+
+	pcall(function()
+		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		if not chatEvents then return end
+		local msgDone = chatEvents:FindFirstChild("OnMessageDoneFiltering")
+		if not msgDone then return end
+		msgDone.OnClientEvent:Connect(function(data)
+			if type(data) ~= "table" or not data.Message or not data.FromSpeaker then return end
+			CHAT.pushMessage(data.FromSpeaker, tonumber(data.SpeakerUserId) or 0, data.Message)
+		end)
+	end)
+end
+--[[ CHAT_CORE_END ]]
+
+-- ============================================================
+-- CHAT PANEL
+-- ============================================================
+local function buildChatPanel()
+	local chatPanel = Instance.new("Frame")
+	chatPanel.Size = UDim2.fromOffset(370, 480)
+	chatPanel.Position = UDim2.new(0.5, -185, 0.5, -240)
+	chatPanel.BackgroundColor3 = BG
+	chatPanel.Visible = false
+	chatPanel.Parent = gui
+	Instance.new("UICorner", chatPanel).CornerRadius = UDim.new(0, 12)
+	Instance.new("UIStroke", chatPanel).Color = PURPLE
+
+	local cHeader = Instance.new("Frame")
+	cHeader.Size = UDim2.new(1, 0, 0, 40)
+	cHeader.BackgroundColor3 = PANEL
+	cHeader.BorderSizePixel = 0
+	cHeader.Parent = chatPanel
+	Instance.new("UICorner", cHeader).CornerRadius = UDim.new(0, 12)
+	local cHeaderFix = Instance.new("Frame")
+	cHeaderFix.Size = UDim2.new(1, 0, 0, 12)
+	cHeaderFix.Position = UDim2.new(0, 0, 1, -12)
+	cHeaderFix.BackgroundColor3 = PANEL
+	cHeaderFix.BorderSizePixel = 0
+	cHeaderFix.Parent = cHeader
+
+	local cTitle = Instance.new("TextLabel")
+	cTitle.BackgroundTransparency = 1
+	cTitle.Size = UDim2.new(1, -110, 1, 0)
+	cTitle.Position = UDim2.fromOffset(14, 0)
+	cTitle.Font = Enum.Font.GothamBold
+	cTitle.TextSize = 15
+	cTitle.TextColor3 = PURPLE
+	cTitle.TextXAlignment = Enum.TextXAlignment.Left
+	cTitle.Text = "Chat + Translate"
+	cTitle.Parent = cHeader
+
+	local cClose = Instance.new("TextButton")
+	cClose.Size = UDim2.fromOffset(48, 28)
+	cClose.Position = UDim2.new(1, -56, 0.5, -14)
+	cClose.BackgroundColor3 = PURPLE_DIM
+	cClose.Text = "Close"
+	cClose.TextSize = 12
+	cClose.Font = Enum.Font.GothamBold
+	cClose.TextColor3 = TEXT
+	cClose.Parent = cHeader
+	Instance.new("UICorner", cClose).CornerRadius = UDim.new(0, 6)
+
+	-- language selector bar -------------------------------------------------
+	local langBar = Instance.new("Frame")
+	langBar.Size = UDim2.new(1, -16, 0, 28)
+	langBar.Position = UDim2.fromOffset(8, 46)
+	langBar.BackgroundColor3 = PANEL
+	langBar.Parent = chatPanel
+	Instance.new("UICorner", langBar).CornerRadius = UDim.new(0, 7)
+
+	local langPad = Instance.new("UIPadding")
+	langPad.PaddingLeft = UDim.new(0, 8)
+	langPad.PaddingRight = UDim.new(0, 4)
+	langPad.Parent = langBar
+
+	local langBtn = Instance.new("TextButton")
+	langBtn.Size = UDim2.new(1, -34, 1, 0)
+	langBtn.BackgroundTransparency = 1
+	langBtn.Text = "Speak in: Auto"
+	langBtn.TextXAlignment = Enum.TextXAlignment.Left
+	langBtn.Font = Enum.Font.GothamBold
+	langBtn.TextSize = 12
+	langBtn.TextColor3 = PURPLE
+	langBtn.Parent = langBar
+
+	local langClear = Instance.new("TextButton")
+	langClear.Size = UDim2.fromOffset(28, 22)
+	langClear.Position = UDim2.new(1, -30, 0.5, -11)
+	langClear.BackgroundColor3 = RED
+	langClear.Text = "✕"
+	langClear.TextSize = 11
+	langClear.Font = Enum.Font.GothamBold
+	langClear.TextColor3 = TEXT
+	langClear.Visible = false
+	langClear.Parent = langBar
+	Instance.new("UICorner", langClear).CornerRadius = UDim.new(0, 5)
+
+	local langMenu = Instance.new("Frame")
+	langMenu.Size = UDim2.new(1, -16, 0, 240)
+	langMenu.Position = UDim2.fromOffset(8, 76)
+	langMenu.BackgroundColor3 = PANEL
+	langMenu.BorderSizePixel = 0
+	langMenu.Visible = false
+	langMenu.ZIndex = 20
+	langMenu.Parent = chatPanel
+	Instance.new("UICorner", langMenu).CornerRadius = UDim.new(0, 8)
+	Instance.new("UIStroke", langMenu).Color = PURPLE
+
+	local langScroll = Instance.new("ScrollingFrame")
+	langScroll.Size = UDim2.new(1, -8, 1, -8)
+	langScroll.Position = UDim2.fromOffset(4, 4)
+	langScroll.BackgroundTransparency = 1
+	langScroll.BorderSizePixel = 0
+	langScroll.ScrollBarThickness = 4
+	langScroll.ScrollBarImageColor3 = PURPLE
+	langScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	langScroll.ZIndex = 21
+	langScroll.Parent = langMenu
+
+	local langLayout = Instance.new("UIListLayout")
+	langLayout.Padding = UDim.new(0, 3)
+	langLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	langLayout.Parent = langScroll
+	langLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		langScroll.CanvasSize = UDim2.new(0, 0, 0, langLayout.AbsoluteContentSize.Y + 6)
+	end)
+
+	-- messages -------------------------------------------------------------
+	local chatScroll = Instance.new("ScrollingFrame")
+	chatScroll.Size = UDim2.new(1, -16, 1, -152)
+	chatScroll.Position = UDim2.fromOffset(8, 80)
+	chatScroll.BackgroundTransparency = 1
+	chatScroll.BorderSizePixel = 0
+	chatScroll.ScrollBarThickness = 4
+	chatScroll.ScrollBarImageColor3 = PURPLE
+	chatScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	chatScroll.Parent = chatPanel
+	local chatLayout = Instance.new("UIListLayout")
+	chatLayout.Padding = UDim.new(0, 6)
+	chatLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	chatLayout.Parent = chatScroll
+	chatLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		chatScroll.CanvasSize = UDim2.new(0, 0, 0, chatLayout.AbsoluteContentSize.Y + 8)
+		chatScroll.CanvasPosition = Vector2.new(0, math.max(0, chatLayout.AbsoluteContentSize.Y - chatScroll.AbsoluteSize.Y))
+	end)
+
+	local replyBar = Instance.new("Frame")
+	replyBar.Size = UDim2.new(1, -16, 0, 56)
+	replyBar.Position = UDim2.new(0, 8, 1, -64)
+	replyBar.BackgroundColor3 = PANEL
+	replyBar.Parent = chatPanel
+	Instance.new("UICorner", replyBar).CornerRadius = UDim.new(0, 8)
+
+	local replyHint = Instance.new("TextLabel")
+	replyHint.BackgroundTransparency = 1
+	replyHint.Size = UDim2.new(1, -16, 0, 14)
+	replyHint.Position = UDim2.fromOffset(8, 2)
+	replyHint.Font = Enum.Font.Gotham
+	replyHint.TextSize = 10
+	replyHint.TextColor3 = MUTED
+	replyHint.TextXAlignment = Enum.TextXAlignment.Left
+	replyHint.TextTruncate = Enum.TextTruncate.AtEnd
+	replyHint.Text = "Type message..."
+	replyHint.Parent = replyBar
+
+	local replyBox = Instance.new("TextBox")
+	replyBox.Size = UDim2.new(1, -70, 0, 28)
+	replyBox.Position = UDim2.fromOffset(8, 20)
+	replyBox.BackgroundColor3 = BG
+	replyBox.TextColor3 = TEXT
+	replyBox.PlaceholderColor3 = MUTED
+	replyBox.PlaceholderText = "Say something..."
+	replyBox.Font = Enum.Font.Gotham
+	replyBox.TextSize = 13
+	replyBox.Text = ""
+	replyBox.ClearTextOnFocus = false
+	replyBox.Parent = replyBar
+	Instance.new("UICorner", replyBox).CornerRadius = UDim.new(0, 6)
+
+	local sendBtn = Instance.new("TextButton")
+	sendBtn.Size = UDim2.fromOffset(50, 28)
+	sendBtn.Position = UDim2.new(1, -58, 0, 20)
+	sendBtn.BackgroundColor3 = PURPLE
+	sendBtn.Text = "Send"
+	sendBtn.Font = Enum.Font.GothamBold
+	sendBtn.TextSize = 12
+	sendBtn.TextColor3 = TEXT
+	sendBtn.Parent = replyBar
+	Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0, 6)
+
+	local function setChatOpen(state)
+		chatOpen = state
+		chatPanel.Visible = chatOpen
+		chatBtn.BackgroundColor3 = chatOpen and PURPLE_DIM or PURPLE
+		if not chatOpen then langMenu.Visible = false end
+	end
+	chatBtn.MouseButton1Click:Connect(function()
+		setChatOpen(not chatOpen)
+	end)
+	cClose.MouseButton1Click:Connect(function()
+		setChatOpen(false)
+	end)
+	makeDraggable(cHeader, chatPanel)
+
+	-- one place that decides what the language bar and hint say
+	local function refreshLangBar()
+		local reply = CHAT.replyTarget
+		if reply then
+			local code = reply.lang or LANG.playerLang[reply.userId]
+			local conf = 0
+			if not code then
+				local guess, c = LANG.detectLocal(reply.original)
+				conf = c
+				if guess ~= "en" and c >= 2 then code = guess end
+			end
+			if (CHAT.speakLang or "auto") ~= "auto" then
+				langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " ▾"
+			elseif code then
+				langBtn.Text = "Reply in: " .. LANG.displayName(code) .. " ▾"
+			else
+				langBtn.Text = "Reply in: their language ▾"
+			end
+			local hint = "Replying to " .. reply.playerName
+			if code and code ~= "en" then
+				hint = hint .. " in " .. LANG.displayName(code)
+			end
+			replyHint.Text = hint .. " - 1 request when you send"
+			replyHint.TextColor3 = ON
+		elseif (CHAT.speakLang or "auto") == "auto" then
+			langBtn.Text = "Speak in: Auto (as typed) ▾"
+			replyHint.Text = "Type message (tap a line to reply, 🌐 to translate)"
+			replyHint.TextColor3 = MUTED
+		else
+			langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " ▾"
+			replyHint.Text = "Your text will be translated to " .. LANG.displayName(CHAT.speakLang)
+			replyHint.TextColor3 = MUTED
+		end
+		langClear.Visible = reply ~= nil
+	end
+
+	local function refreshSendUi()
+		if CHAT.sending then
+			sendBtn.Text = "…"
+			sendBtn.BackgroundColor3 = OFF
+		else
+			sendBtn.Text = "Send"
+			sendBtn.BackgroundColor3 = PURPLE
 		end
 	end
-end)
+
+	-- repaint a row from its stored state (no requests happen here)
+	local function paintRow(msg)
+		if msg._nameLbl then
+			local tag = msg.lang or msg.langHint
+			local suffix = ""
+			if msg.mine then
+				if msg.sent == true then
+					suffix = "  (sent)"
+				elseif msg.sent == false then
+					suffix = "  (sending…)"
+				end
+			elseif tag and tag ~= "en" then
+				suffix = "  [" .. tag .. "]"
+			end
+			msg._nameLbl.Text = msg.playerName .. suffix
+		end
+		if msg._textLbl then
+			if msg.state == "translated" and msg.translated then
+				msg._textLbl.Text = msg.translated
+				msg._textLbl.TextColor3 = TEXT
+			elseif msg.state == "error" then
+				msg._textLbl.Text = msg.original .. "\n" .. utf8.char(9888) .. " " .. (msg.err or "translation failed")
+				msg._textLbl.TextColor3 = RED
+			else
+				msg._textLbl.Text = msg.display
+				msg._textLbl.TextColor3 = TEXT
+			end
+		end
+		if msg._trBtn then
+			if msg.busy then
+				msg._trBtn.Text = "..."
+			elseif msg.state == "translated" then
+				msg._trBtn.Text = "↺"
+			else
+				msg._trBtn.Text = "🌐"
+			end
+		end
+	end
+
+	local function addMessageRow(msg)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -4, 0, 0)
+		row.AutomaticSize = Enum.AutomaticSize.Y
+		row.BackgroundColor3 = PANEL
+		row.Parent = chatScroll
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+		local pad = Instance.new("UIPadding", row)
+		pad.PaddingTop = UDim.new(0, 6)
+		pad.PaddingBottom = UDim.new(0, 6)
+		pad.PaddingLeft = UDim.new(0, 8)
+		pad.PaddingRight = UDim.new(0, 8)
+
+		local nameLbl = Instance.new("TextLabel")
+		nameLbl.BackgroundTransparency = 1
+		nameLbl.Size = UDim2.new(1, -70, 0, 16)
+		nameLbl.Font = Enum.Font.GothamBold
+		nameLbl.TextSize = 12
+		nameLbl.TextColor3 = PURPLE
+		nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+		nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		nameLbl.Parent = row
+
+		local textLbl = Instance.new("TextLabel")
+		textLbl.BackgroundTransparency = 1
+		textLbl.Size = UDim2.new(1, 0, 0, 0)
+		textLbl.AutomaticSize = Enum.AutomaticSize.Y
+		textLbl.Position = UDim2.fromOffset(0, 18)
+		textLbl.Font = Enum.Font.Gotham
+		textLbl.TextSize = 13
+		textLbl.TextColor3 = TEXT
+		textLbl.TextXAlignment = Enum.TextXAlignment.Left
+		textLbl.TextWrapped = true
+		textLbl.Parent = row
+
+		msg._row = row
+		msg._nameLbl = nameLbl
+		msg._textLbl = textLbl
+
+		local trBtn = Instance.new("TextButton")
+		trBtn.Size = UDim2.fromOffset(28, 22)
+		trBtn.Position = UDim2.new(1, -60, 0, 0)
+		trBtn.BackgroundColor3 = PURPLE_DIM
+		trBtn.Text = "🌐"
+		trBtn.TextSize = 12
+		trBtn.Font = Enum.Font.GothamBold
+		trBtn.TextColor3 = TEXT
+		trBtn.Parent = row
+		Instance.new("UICorner", trBtn).CornerRadius = UDim.new(0, 4)
+		msg._trBtn = trBtn
+
+		local rpBtn = Instance.new("TextButton")
+		rpBtn.Size = UDim2.fromOffset(28, 22)
+		rpBtn.Position = UDim2.new(1, -28, 0, 0)
+		rpBtn.BackgroundColor3 = PURPLE_DIM
+		rpBtn.Text = "↩️"
+		rpBtn.TextSize = 12
+		rpBtn.Font = Enum.Font.GothamBold
+		rpBtn.TextColor3 = TEXT
+		rpBtn.Parent = row
+		Instance.new("UICorner", rpBtn).CornerRadius = UDim.new(0, 4)
+
+		trBtn.MouseButton1Click:Connect(function()
+			CHAT.manualTranslate(msg)
+		end)
+
+		rpBtn.MouseButton1Click:Connect(function()
+			if msg.mine then
+				CHAT.notify("Pick somebody else's line to reply to")
+				return
+			end
+			CHAT.replyTo(msg)
+			setChatOpen(true)
+			replyBox:CaptureFocus()
+		end)
+
+		paintRow(msg)
+		return row
+	end
+
+	CHAT.onNew = addMessageRow
+	CHAT.onUpdate = paintRow
+	CHAT.onState = function()
+		refreshLangBar()
+		refreshSendUi()
+	end
+	CHAT.notify = function(text)
+		showToast(text, 7)
+	end
+
+	-- language menu --------------------------------------------------------
+	local function setLangMenu(open)
+		langMenu.Visible = open
+		if open then
+			langScroll.CanvasPosition = Vector2.new(0, 0)
+		end
+	end
+
+	local function addLangRow(text, code)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1, -4, 0, 28)
+		b.BackgroundColor3 = BG
+		b.TextColor3 = TEXT
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 12
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.Text = "  " .. text
+		b.ZIndex = 22
+		b.Parent = langScroll
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+		b.MouseButton1Click:Connect(function()
+			CHAT.setSpeakLang(code)
+			setLangMenu(false)
+		end)
+		return b
+	end
+
+	addLangRow("Auto - match the line I reply to (as typed when not replying)", "auto")
+	addLangRow("English (send as typed, 0 requests)", "en")
+
+	local langOrder = {}
+	for code, name in pairs(LANG.names) do
+		if code ~= "en" then
+			langOrder[#langOrder + 1] = { code = code, name = name }
+		end
+	end
+	table.sort(langOrder, function(a, b)
+		return string.lower(a.name) < string.lower(b.name)
+	end)
+	for _, entry in ipairs(langOrder) do
+		addLangRow(entry.name .. " (" .. entry.code .. ")", entry.code)
+	end
+
+	langBtn.MouseButton1Click:Connect(function()
+		setLangMenu(not langMenu.Visible)
+	end)
+	langClear.MouseButton1Click:Connect(function()
+		setLangMenu(false)
+		CHAT.clearReply()
+	end)
+
+	-- input ----------------------------------------------------------------
+	local function takeInput()
+		if CHAT.sending then
+			CHAT.notify("Still sending the previous message", 3)
+			return
+		end
+		local text = replyBox.Text
+		if not text or not text:match("%S") then return end
+		-- clear first, so a second Enter cannot send the same line again
+		replyBox.Text = ""
+		CHAT.enqueueSend(text)
+	end
+
+	sendBtn.MouseButton1Click:Connect(takeInput)
+	replyBox.FocusLost:Connect(function(enter)
+		if enter then takeInput() end
+	end)
+
+	CHAT.startListening()
+	refreshLangBar()
+	refreshSendUi()
+end
+buildChatPanel()
 
 -- initial UI state
 refreshUiToggles()
