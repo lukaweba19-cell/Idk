@@ -22,5 +22,8 @@ It fails with a non-zero exit code if any check fails. Covered:
   language; a send after that does not re-translate.
 - The language selector: chosen language = 1 request, English = 0, cached repeats = 0.
 - No double send: a second press while a send is in flight is refused.
+- Language detection: 84 named languages, script + unique-letter + function-word
+  matching, English never falsely tagged; sample phrases for 38 languages detected
+  offline with 0 requests.
 - No duplicate rows: own echo, filtered echo, duplicate listener delivery and the
   legacy + modern chat systems together all render one row per message.

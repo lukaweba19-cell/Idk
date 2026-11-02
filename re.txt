@@ -2447,14 +2447,51 @@ end
 -- ------------------------------------------------------------------
 local LANG = { playerLang = {} }
 
+-- Every language the panel can name, tag and speak. The selector shows these
+-- names, never the bare code.
 LANG.names = {
-	en = "English", es = "Spanish", pt = "Portuguese", fr = "French", de = "German",
-	it = "Italian", nl = "Dutch", pl = "Polish", ru = "Russian", uk = "Ukrainian",
-	tr = "Turkish", ar = "Arabic", he = "Hebrew", hi = "Hindi", th = "Thai",
-	ja = "Japanese", ko = "Korean", zh = "Chinese", vi = "Vietnamese", id = "Indonesian",
-	sv = "Swedish", no = "Norwegian", da = "Danish", fi = "Finnish", cs = "Czech",
-	ro = "Romanian", el = "Greek", hu = "Hungarian", bg = "Bulgarian", tl = "Tagalog",
-	ms = "Malay", fa = "Persian", ur = "Urdu", bn = "Bengali", ta = "Tamil",
+	af = "Afrikaans", am = "Amharic", ar = "Arabic", az = "Azerbaijani",
+	be = "Belarusian", bg = "Bulgarian", bn = "Bengali", bs = "Bosnian",
+	ca = "Catalan", cs = "Czech", cy = "Welsh", da = "Danish", de = "German",
+	el = "Greek", en = "English", eo = "Esperanto", es = "Spanish",
+	et = "Estonian", eu = "Basque", fa = "Persian", fi = "Finnish",
+	fr = "French", ga = "Irish", gl = "Galician", gu = "Gujarati",
+	ha = "Hausa", he = "Hebrew", hi = "Hindi", hr = "Croatian", hu = "Hungarian",
+	hy = "Armenian", id = "Indonesian", ig = "Igbo", is = "Icelandic",
+	it = "Italian", ja = "Japanese", ka = "Georgian", kk = "Kazakh",
+	km = "Khmer", kn = "Kannada", ko = "Korean", ku = "Kurdish", lb = "Luxembourgish",
+	lo = "Lao", lt = "Lithuanian", lv = "Latvian", mk = "Macedonian",
+	ml = "Malayalam", mn = "Mongolian", mr = "Marathi", ms = "Malay",
+	mt = "Maltese", my = "Burmese", ne = "Nepali", nl = "Dutch", no = "Norwegian",
+	["or"] = "Odia", pa = "Punjabi", pl = "Polish", ps = "Pashto", pt = "Portuguese",
+	ro = "Romanian", ru = "Russian", si = "Sinhala", sk = "Slovak", sl = "Slovenian",
+	so = "Somali", sq = "Albanian", sr = "Serbian", sv = "Swedish", sw = "Swahili",
+	ta = "Tamil", te = "Telugu", th = "Thai", tl = "Filipino", tr = "Turkish",
+	uk = "Ukrainian", ur = "Urdu", uz = "Uzbek", vi = "Vietnamese", xh = "Xhosa",
+	yo = "Yoruba", zh = "Chinese", zu = "Zulu",
+}
+
+-- ISO 639-2 codes, English names and regional variants a model may answer with
+LANG.aliases = {
+	por = "pt", spa = "es", fra = "fr", fre = "fr", deu = "de", ger = "de",
+	ita = "it", nld = "nl", dut = "nl", rus = "ru", ukr = "uk", pol = "pl",
+	ces = "cs", cze = "cs", slk = "sk", slo = "sk", hun = "hu", ron = "ro",
+	rum = "ro", bul = "bg", ell = "el", gre = "el", tur = "tr", ara = "ar",
+	heb = "he", fas = "fa", per = "fa", urd = "ur", hin = "hi", ben = "bn",
+	tam = "ta", tel = "te", kan = "kn", mal = "ml", guj = "gu", pan = "pa",
+	ori = "or", ory = "or", asm = "as", srp = "sr", hrv = "hr", bos = "bs",
+	slv = "sl", lit = "lt", lav = "lv", est = "et", cat = "ca", glg = "gl",
+	eus = "eu", baq = "eu", afr = "af", swa = "sw", amh = "am", kat = "ka",
+	geo = "ka", hye = "hy", arm = "hy", aze = "az", kaz = "kk", uzb = "uz",
+	mon = "mn", fil = "tl", tgl = "tl", msa = "ms", may = "ms", ind = "id",
+	sqi = "sq", alb = "sq", mkd = "mk", mac = "mk", bel = "be", pus = "ps",
+	kur = "ku", ckb = "ku", som = "so", yor = "yo", ibo = "ig", hau = "ha",
+	zul = "zu", xho = "xh", cym = "cy", wel = "cy", gle = "ga", iri = "ga",
+	mlt = "mt", ltz = "lb", epo = "eo", isl = "is", ice = "is", dan = "da",
+	swe = "sv", nor = "no", nob = "no", nno = "no", fin = "fi", jpn = "ja",
+	kor = "ko", zho = "zh", chi = "zh", cmn = "zh", yue = "zh", nan = "zh",
+	vie = "vi", tha = "th", lao = "lo", khm = "km", mya = "my", bur = "my",
+	sin = "si", nep = "ne", mar = "mr", ["in"] = "id", iw = "he",
 }
 
 -- name -> code, so a model answering "LANG: Spanish" still resolves
@@ -2462,92 +2499,386 @@ LANG.codes = {}
 for code, name in pairs(LANG.names) do
 	LANG.codes[name:lower()] = code
 end
+for alias, code in pairs(LANG.aliases) do
+	LANG.codes[alias] = code
+end
 
 -- Script ranges give an instant, reliable answer for non-Latin text.
 LANG.scripts = {
-	{ lo = 0x0400, hi = 0x052F, code = "ru" }, -- Cyrillic
-	{ lo = 0x2DE0, hi = 0x2DFF, code = "ru" },
+	{ lo = 0x0400, hi = 0x04FF, code = "ru" }, -- Cyrillic (refined below)
+	{ lo = 0x0500, hi = 0x052F, code = "ru" },
+	{ lo = 0x0530, hi = 0x058F, code = "hy" }, -- Armenian
+	{ lo = 0x10A0, hi = 0x10FF, code = "ka" }, -- Georgian
+	{ lo = 0x1200, hi = 0x139F, code = "am" }, -- Ethiopic
+	{ lo = 0x0590, hi = 0x05FF, code = "he" }, -- Hebrew
+	{ lo = 0x0600, hi = 0x06FF, code = "ar" }, -- Arabic (refined below)
+	{ lo = 0x0750, hi = 0x077F, code = "ar" },
+	{ lo = 0x08A0, hi = 0x08FF, code = "ar" },
+	{ lo = 0xFB50, hi = 0xFDFF, code = "ar" },
+	{ lo = 0xFE70, hi = 0xFEFF, code = "ar" },
+	{ lo = 0x0900, hi = 0x097F, code = "hi" }, -- Devanagari
+	{ lo = 0x0980, hi = 0x09FF, code = "bn" }, -- Bengali
+	{ lo = 0x0A00, hi = 0x0A7F, code = "pa" }, -- Gurmukhi
+	{ lo = 0x0A80, hi = 0x0AFF, code = "gu" }, -- Gujarati
+	{ lo = 0x0B00, hi = 0x0B7F, code = "or" }, -- Odia
+	{ lo = 0x0B80, hi = 0x0BFF, code = "ta" }, -- Tamil
+	{ lo = 0x0C00, hi = 0x0C7F, code = "te" }, -- Telugu
+	{ lo = 0x0C80, hi = 0x0CFF, code = "kn" }, -- Kannada
+	{ lo = 0x0D00, hi = 0x0D7F, code = "ml" }, -- Malayalam
+	{ lo = 0x0D80, hi = 0x0DFF, code = "si" }, -- Sinhala
+	{ lo = 0x0E00, hi = 0x0E7F, code = "th" }, -- Thai
+	{ lo = 0x0E80, hi = 0x0EFF, code = "lo" }, -- Lao
+	{ lo = 0x1000, hi = 0x109F, code = "my" }, -- Burmese
+	{ lo = 0x1780, hi = 0x17FF, code = "km" }, -- Khmer
+	{ lo = 0x1100, hi = 0x11FF, code = "ko" }, -- Hangul
+	{ lo = 0xAC00, hi = 0xD7AF, code = "ko" },
 	{ lo = 0x3040, hi = 0x30FF, code = "ja" }, -- kana
 	{ lo = 0x31F0, hi = 0x31FF, code = "ja" },
-	{ lo = 0x4E00, hi = 0x9FFF, code = "zh" }, -- han
-	{ lo = 0x3400, hi = 0x4DBF, code = "zh" },
-	{ lo = 0xAC00, hi = 0xD7AF, code = "ko" }, -- hangul
-	{ lo = 0x1100, hi = 0x11FF, code = "ko" },
-	{ lo = 0x0600, hi = 0x06FF, code = "ar" }, -- arabic
-	{ lo = 0x0750, hi = 0x077F, code = "ar" },
-	{ lo = 0x0590, hi = 0x05FF, code = "he" }, -- hebrew
-	{ lo = 0x0E00, hi = 0x0E7F, code = "th" }, -- thai
+	{ lo = 0x3400, hi = 0x4DBF, code = "zh" }, -- han
+	{ lo = 0x4E00, hi = 0x9FFF, code = "zh" },
+	{ lo = 0xF900, hi = 0xFAFF, code = "zh" },
 	{ lo = 0x0370, hi = 0x03FF, code = "el" }, -- greek
-	{ lo = 0x0900, hi = 0x097F, code = "hi" }, -- devanagari
+	{ lo = 0x1F00, hi = 0x1FFF, code = "el" },
 }
 
--- Common function words for Latin-script languages. Two or more hits is a
--- strong enough signal to tag the language without asking the API.
+-- Letters that only one or two languages use. A unique letter is very strong
+-- evidence; a shared one is a hint.
+LANG.marks = {
+	es = "ñ¿¡", pt = "ãõ", fr = "œ", de = "ß", tr = "ğış", pl = "łąęśżźćń",
+	cs = "řěů", sk = "ľĺŕ", ro = "ășț", hu = "őű", vi = "đơư", is = "þð",
+	lv = "ģķļņ", lt = "ųėįū", eo = "ĉĝĥĵŝŭ", az = "ə", sv = "å", da = "ø",
+	no = "ø", hr = "đ", sq = "ë", et = "õ", uk = "їєґі", be = "ў", mk = "ѓќѕ",
+	sr = "ђћџљњ", kk = "әғқңұүһ",
+}
+
+-- Cyrillic and Arabic script are shared by several languages; these letters
+-- tell them apart.
+LANG.refineMarks = {
+	ru = { "і", "ї", "є", "ґ", "ў", "ѓ", "ќ", "ѕ", "ђ", "ћ", "џ", "љ", "њ",
+		"ә", "ғ", "қ", "ң", "ұ", "ү", "һ", "ө" },
+	ar = { "پ", "چ", "ژ", "گ", "ٹ", "ڈ", "ڑ", "ں", "ے", "ھ" },
+}
+LANG.refineMap = {
+	["і"] = "uk", ["ї"] = "uk", ["є"] = "uk", ["ґ"] = "uk", ["ў"] = "be",
+	["ѓ"] = "mk", ["ќ"] = "mk", ["ѕ"] = "mk",
+	["ђ"] = "sr", ["ћ"] = "sr", ["џ"] = "sr", ["љ"] = "sr", ["њ"] = "sr",
+	["ә"] = "kk", ["ғ"] = "kk", ["қ"] = "kk", ["ң"] = "kk", ["ұ"] = "kk",
+	["ү"] = "kk", ["һ"] = "kk", ["ө"] = "mn",
+	["پ"] = "fa", ["چ"] = "fa", ["ژ"] = "fa", ["گ"] = "fa",
+	["ٹ"] = "ur", ["ڈ"] = "ur", ["ڑ"] = "ur", ["ں"] = "ur", ["ے"] = "ur", ["ھ"] = "ur",
+}
+
+-- Scripts that cover several languages: word evidence picks the member.
+LANG.family = {
+	ru = { "ru", "uk", "be", "bg", "sr", "mk", "kk", "mn" },
+	ar = { "ar", "fa", "ur" },
+	hi = { "hi", "mr", "ne" },
+}
+
+-- Common function words and chat words per language.
 LANG.words = {
-	es = { "el", "la", "los", "las", "de", "que", "y", "en", "un", "una", "por", "para",
-		"con", "no", "sí", "si", "es", "mi", "tu", "como", "pero", "más", "mas", "está",
-		"esta", "estoy", "hola", "gracias", "bien", "mal", "porque", "cuando", "donde",
-		"muy", "yo", "nosotros", "ellos", "ella", "él", "quiero", "tienes", "ayuda",
-		"juego", "amigo", "casa", "qué", "quien", "también", "tambien", "nada", "mucho" },
-	pt = { "o", "a", "os", "as", "de", "que", "e", "um", "uma", "não", "nao", "para",
-		"com", "por", "do", "da", "dos", "das", "muito", "mais", "você", "voce", "está",
-		"esta", "também", "tambem", "como", "quando", "onde", "eu", "ele", "ela", "nós",
-		"amigo", "jogo", "casa", "obrigado", "obrigada", "olá", "oi", "tudo", "bem",
-		"estou", "tô", "cara", "sim", "tipo", "aqui", "agora", "nada" },
-	fr = { "le", "la", "les", "des", "de", "du", "et", "un", "une", "est", "pas", "que",
-		"qui", "dans", "pour", "avec", "sur", "ne", "plus", "vous", "nous", "je", "tu",
-		"il", "elle", "bonjour", "merci", "oui", "non", "mais", "très", "tres", "bien",
-		"suis", "comment", "quoi", "où", "au", "aux", "ce", "cette", "mon", "ton" },
-	de = { "der", "die", "das", "und", "ist", "nicht", "ein", "eine", "ich", "du", "er",
-		"sie", "es", "wir", "ihr", "mit", "für", "fur", "auf", "von", "zu", "den", "dem",
-		"des", "haben", "bin", "bist", "sind", "auch", "aber", "sehr", "danke", "hallo",
-		"wie", "was", "wo", "noch", "mal", "gut", "doch" },
-	it = { "il", "lo", "la", "gli", "le", "di", "che", "e", "un", "una", "non", "per",
-		"con", "su", "sono", "sei", "è", "ciao", "grazie", "come", "dove", "quando",
-		"molto", "più", "piu", "anche", "ma", "io", "tu", "lui", "lei", "noi", "bene",
-		"cosa", "perché", "perche", "questo", "quella" },
+	es = { "el", "la", "los", "las", "de", "que", "y", "en", "un", "una", "por",
+		"para", "con", "no", "sí", "si", "es", "mi", "tu", "como", "pero", "más",
+		"mas", "está", "esta", "estoy", "hola", "gracias", "bien", "mal", "porque",
+		"cuando", "donde", "muy", "yo", "nosotros", "ellos", "ella", "él", "quiero",
+		"tienes", "ayuda", "juego", "amigo", "casa", "qué", "quien", "también",
+		"tambien", "nada", "mucho", "hacer", "sé", "eres", "soy", "vamos", "bueno",
+		"buenas", "tardes", "noches", "adiós", "adios", "dónde", "tengo", "gusto",
+		"mañana", "manana", "ahora", "todos", "algo", "voy", "estás", "estas" },
+	pt = { "o", "a", "os", "as", "de", "que", "e", "um", "uma", "não", "nao",
+		"para", "com", "por", "do", "da", "dos", "das", "muito", "mais", "você",
+		"voce", "está", "esta", "também", "tambem", "como", "quando", "onde", "eu",
+		"ele", "ela", "nós", "amigo", "jogo", "casa", "obrigado", "obrigada", "olá",
+		"oi", "tudo", "bem", "estou", "tô", "cara", "sim", "tipo", "aqui", "agora",
+		"nada", "bom", "boa", "dia", "noite", "tchau", "beleza", "vamos", "quero",
+		"isso", "esse", "essa", "meu", "minha", "fazer", "sei", "jogar", "mano" },
+	fr = { "le", "la", "les", "des", "de", "du", "et", "un", "une", "est", "pas",
+		"que", "qui", "dans", "pour", "avec", "sur", "ne", "plus", "vous", "nous",
+		"je", "tu", "il", "elle", "bonjour", "merci", "oui", "non", "mais", "très",
+		"tres", "bien", "suis", "comment", "quoi", "où", "au", "aux", "ce", "cette",
+		"mon", "ton", "salut", "ça", "va", "peux", "veux", "faire", "bonsoir",
+		"revoir", "oui", "merci", "beaucoup", "aujourd" },
+	de = { "der", "die", "das", "und", "ist", "nicht", "ein", "eine", "ich", "du",
+		"er", "sie", "es", "wir", "ihr", "mit", "für", "fur", "auf", "von", "zu",
+		"den", "dem", "des", "haben", "habe", "bin", "bist", "sind", "auch", "aber",
+		"sehr", "danke", "hallo", "wie", "was", "wo", "noch", "mal", "gut", "doch",
+		"weiß", "weiss", "weißt", "guten", "tag", "tschüss", "tschuss", "bitte",
+		"gerne", "kann", "muss", "meinst", "jetzt", "nur", "schon", "mehr" },
+	it = { "il", "lo", "la", "gli", "le", "di", "che", "e", "un", "una", "non",
+		"per", "con", "su", "sono", "sei", "è", "ciao", "grazie", "come", "dove",
+		"quando", "molto", "più", "piu", "anche", "ma", "io", "tu", "lui", "lei",
+		"noi", "bene", "cosa", "perché", "perche", "questo", "quella", "buongiorno",
+		"buonasera", "arrivederci", "sto", "fare", "adesso", "voglio" },
 	nl = { "de", "het", "een", "en", "van", "ik", "je", "jij", "hij", "zij", "wij",
-		"niet", "dat", "dit", "met", "voor", "op", "zijn", "ben", "bent", "wat", "hoe",
-		"waar", "dank", "hallo", "ook", "maar", "goed", "nog" },
-	id = { "yang", "dan", "di", "ke", "dari", "ini", "itu", "saya", "aku", "kamu",
-		"tidak", "nggak", "untuk", "dengan", "apa", "bagaimana", "kenapa", "sudah",
-		"belum", "bisa", "mau", "terima", "kasih", "halo", "banget", "aja", "sih" },
-	tr = { "ve", "bir", "bu", "şu", "su", "için", "icin", "ile", "de", "da", "ne",
-		"ben", "sen", "o", "biz", "siz", "çok", "cok", "var", "yok", "değil", "degil",
-		"nasıl", "nasil", "merhaba", "teşekkür", "tesekkur", "ama", "çünkü", "cunku" },
-	pl = { "i", "w", "na", "z", "do", "nie", "to", "jest", "się", "sie", "że", "ze",
-		"jak", "co", "ale", "tak", "ja", "ty", "on", "ona", "my", "wy", "dziękuję",
-		"dziekuje", "cześć", "czesc", "bardzo", "dobrze", "gdzie", "kiedy" },
+		"niet", "dat", "dit", "met", "voor", "op", "zijn", "ben", "bent", "wat",
+		"hoe", "waar", "dank", "hallo", "ook", "maar", "goed", "nog", "ga", "gaat",
+		"kan", "wil", "dag", "doei", "alsjeblieft", "bedoelt", "weet", "nu" },
+	pl = { "i", "w", "na", "z", "do", "nie", "to", "jest", "się", "sie", "że",
+		"ze", "jak", "co", "ale", "tak", "ja", "ty", "on", "ona", "my", "wy",
+		"dziękuję", "dziekuje", "cześć", "czesc", "bardzo", "dobrze", "gdzie",
+		"kiedy", "mam", "masz", "jestem", "proszę", "prosze", "dzień", "dzien",
+		"dobry", "siema", "hej", "robisz" },
+	cs = { "a", "v", "se", "na", "je", "že", "ze", "to", "není", "neni", "jak",
+		"co", "ale", "tak", "já", "ja", "ty", "on", "ona", "my", "vy", "děkuji",
+		"dekuji", "ahoj", "dobrý", "dobry", "den", "prosím", "prosim", "moc",
+		"kde", "kdy", "jsem", "jsi", "nevím", "nevim", "mám", "mam", "dělat",
+		"delat", "chceš", "chces" },
+	sk = { "a", "v", "sa", "na", "je", "že", "to", "nie", "ako", "čo", "co",
+		"ale", "tak", "áno", "ano", "ja", "ty", "on", "ona", "my", "vy", "ďakujem",
+		"dakujem", "ahoj", "dobrý", "den", "prosím", "prosim", "veľmi", "velmi",
+		"kde", "kedy", "som", "si", "nevem", "robím", "robim" },
+	hu = { "a", "az", "és", "es", "nem", "hogy", "egy", "van", "vagyok", "vagy",
+		"te", "ő", "mi", "ti", "igen", "köszönöm", "koszonom", "szia", "jó", "jo",
+		"napot", "hol", "mikor", "nagyon", "jól", "jol", "kérem", "kerem", "én",
+		"en", "csinálsz", "csinalsz", "tudom", "akarok" },
+	ro = { "și", "si", "în", "in", "nu", "un", "o", "este", "sunt", "eu", "tu",
+		"el", "ea", "noi", "voi", "ei", "ce", "cum", "unde", "când", "cand",
+		"mulțumesc", "multumesc", "bună", "buna", "ziua", "salut", "foarte", "bine",
+		"dar", "mai", "mă", "ma", "te", "vă", "va", "faci", "fac", "frumos" },
+	bg = { "и", "в", "на", "е", "не", "се", "че", "да", "с", "за", "от", "това",
+		"аз", "ти", "той", "тя", "ние", "вие", "те", "как", "какво", "къде",
+		"кога", "благодаря", "здравей", "здравейте", "добре", "много", "но", "си",
+		"съм", "искам" },
+	hr = { "i", "u", "na", "je", "se", "da", "ne", "što", "sto", "sam", "si",
+		"smo", "ste", "su", "ja", "ti", "on", "ona", "mi", "vi", "hvala", "dobar",
+		"dan", "dobro", "kako", "gdje", "kada", "molim", "želim", "zelim" },
+	sr = { "и", "у", "на", "је", "да", "не", "шта", "ја", "ти", "он", "она",
+		"ми", "ви", "хвала", "добар", "дан", "добро", "како", "где", "када",
+		"молим", "желим", "здраво", "си", "сам", "смо", "сте", "су", "se", "sam",
+		"si", "su", "zdravo" },
+	sl = { "in", "v", "na", "je", "se", "da", "ne", "kaj", "sem", "si", "smo",
+		"ste", "so", "jaz", "ti", "on", "ona", "mi", "vi", "hvala", "dober",
+		"dan", "dobro", "kako", "kje", "kdaj", "prosim", "hočem", "hocm" },
+	ru = { "и", "в", "на", "не", "что", "это", "я", "ты", "он", "она", "мы",
+		"вы", "они", "как", "где", "когда", "спасибо", "привет", "хорошо", "очень",
+		"но", "да", "нет", "пожалуйста", "есть", "можно", "дела", "хочешь",
+		"думаешь", "сейчас" },
+	uk = { "і", "в", "на", "є", "не", "що", "це", "я", "ти", "він", "вона",
+		"ми", "ви", "вони", "як", "де", "коли", "дякую", "привіт", "добре",
+		"дуже", "але", "так", "справи", "хочеш", "думаєш", "зараз" },
+	be = { "і", "ў", "на", "не", "што", "гэта", "я", "ты", "ён", "яна", "мы",
+		"вы", "яны", "як", "дзе", "калі", "дзякуй", "прывітанне", "добра" },
+	mk = { "и", "во", "на", "е", "не", "што", "ова", "јас", "ти", "тој", "таа",
+		"ние", "вие", "тие", "како", "каде", "кога", "благодарам", "здраво",
+		"добро", "многу", "но", "да", "сакам" },
+	el = { "και", "το", "η", "ο", "να", "δεν", "είναι", "με", "για", "από",
+		"που", "τι", "πώς", "πως", "γεια", "σου", "ευχαριστώ", "ευχαριστω", "καλά",
+		"καλα", "κάνεις", "κανεις", "πολύ", "πολυ", "τώρα", "θελω", "θέλω" },
+	tr = { "ve", "bir", "bu", "şu", "su", "için", "icin", "ile", "de", "da",
+		"ne", "ben", "sen", "o", "biz", "siz", "çok", "cok", "var", "yok", "değil",
+		"degil", "nasıl", "nasil", "merhaba", "teşekkür", "tesekkur", "ama",
+		"çünkü", "cunku", "nasılsın", "nasilsin", "iyi", "güzel", "guzel", "tamam",
+		"istiyorum", "yapıyorsun", "yapiyorsun" },
+	id = { "yang", "dan", "di", "ke", "dari", "ini", "itu", "saya", "aku",
+		"kamu", "tidak", "nggak", "untuk", "dengan", "apa", "bagaimana", "kenapa",
+		"sudah", "belum", "bisa", "mau", "terima", "kasih", "halo", "banget",
+		"aja", "sih", "selamat", "pagi", "malam", "sedang", "tahu" },
+	ms = { "yang", "dan", "di", "ke", "dari", "ini", "itu", "saya", "awak",
+		"tidak", "tak", "untuk", "dengan", "apa", "bagaimana", "kenapa", "sudah",
+		"belum", "boleh", "mahu", "terima", "kasih", "hai", "sangat", "juga",
+		"selamat", "pagi", "malam", "tahu" },
+	tl = { "ang", "ng", "sa", "na", "ay", "at", "ako", "ikaw", "siya", "kami",
+		"tayo", "kayo", "sila", "hindi", "oo", "salamat", "kumusta", "mabuti",
+		"maganda", "pero", "kasi", "ano", "paano", "saan", "kailan", "ngayon",
+		"bukas", "mahal", "gusto" },
 	vi = { "và", "va", "của", "cua", "là", "la", "không", "khong", "tôi", "toi",
-		"bạn", "ban", "anh", "em", "chị", "chi", "này", "nay", "được", "duoc", "có",
-		"co", "một", "mot", "gì", "gi", "rồi", "roi", "với", "voi" },
+		"bạn", "ban", "anh", "em", "chị", "chi", "này", "nay", "được", "duoc",
+		"có", "co", "một", "mot", "gì", "gi", "rồi", "roi", "với", "voi", "xin",
+		"chào", "chao", "cảm", "cam", "ơn", "on", "tốt", "tot", "khỏe", "khoe" },
+	sv = { "och", "att", "det", "som", "på", "pa", "är", "ar", "inte", "en",
+		"ett", "jag", "du", "han", "hon", "vi", "ni", "de", "med", "för", "for",
+		"av", "till", "tack", "hej", "bra", "hur", "vad", "var", "när", "nar",
+		"mycket", "också", "ocksa", "vet", "menar" },
+	no = { "og", "å", "a", "det", "som", "på", "pa", "er", "ikke", "en", "et",
+		"jeg", "du", "han", "hun", "vi", "dere", "de", "med", "for", "av", "til",
+		"takk", "hei", "bra", "hvordan", "hva", "hvor", "når", "nar", "veldig",
+		"også", "ogsa", "vet", "mener" },
+	da = { "og", "det", "som", "på", "pa", "er", "ikke", "en", "et", "jeg",
+		"du", "han", "hun", "vi", "de", "med", "for", "af", "til", "tak", "hej",
+		"god", "hvordan", "hvad", "hvor", "hvornår", "meget", "også", "ved",
+		"mener" },
+	fi = { "ja", "on", "ei", "se", "että", "etta", "minä", "mina", "sinä",
+		"sina", "hän", "han", "me", "te", "he", "kanssa", "mutta", "kiitos",
+		"moi", "hei", "hyvä", "hyva", "miten", "mitä", "mita", "missä", "missa",
+		"paljon", "nyt", "tiedä", "tieda" },
+	is = { "og", "að", "ad", "er", "ekki", "ég", "eg", "þú", "thu", "hann",
+		"hún", "hun", "við", "vid", "þið", "þeir", "með", "med", "fyrir", "takk",
+		"halló", "hallo", "góðan", "godan", "dag", "hvað", "hvad", "hvernig",
+		"mjög", "mjog" },
+	et = { "ja", "on", "ei", "see", "et", "ma", "sa", "ta", "me", "te", "nad",
+		"jaoks", "aga", "aitäh", "aitah", "tere", "hea", "kuidas", "mis", "kus",
+		"palju", "tean" },
+	lt = { "ir", "yra", "ne", "kad", "aš", "as", "tu", "jis", "ji", "mes",
+		"jūs", "jus", "jie", "su", "bet", "ačiū", "aciu", "labas", "gerai",
+		"kaip", "kur", "kada", "prašau", "prasau", "noriu" },
+	lv = { "un", "ir", "ne", "ka", "es", "tu", "viņš", "vins", "viņa", "vina",
+		"mēs", "mes", "jūs", "jus", "viņi", "vini", "ar", "bet", "paldies",
+		"sveiki", "labi", "kā", "kur", "kad", "lūdzu", "ludzu", "gribu" },
+	ca = { "el", "la", "els", "les", "de", "que", "i", "un", "una", "no", "és",
+		"es", "amb", "per", "però", "pero", "com", "quan", "on", "molt", "gràcies",
+		"gracies", "hola", "bon", "dia", "adéu", "adeu", "sí", "vull" },
+	gl = { "o", "a", "os", "as", "de", "que", "e", "un", "unha", "non", "é",
+		"con", "por", "pero", "como", "cando", "onde", "moito", "grazas", "ola",
+		"bo", "día", "dia", "adeus", "quero" },
+	eu = { "eta", "da", "ez", "bat", "ni", "zu", "hura", "gu", "zuek", "haiek",
+		"baina", "eskerrik", "asko", "kaixo", "ondo", "nola", "non", "noiz",
+		"mesedez", "nahi" },
+	af = { "die", "en", "van", "is", "nie", "ek", "jy", "hy", "sy", "ons",
+		"julle", "hulle", "met", "vir", "maar", "dankie", "hallo", "goed", "hoe",
+		"wat", "waar", "wanneer", "baie", "asseblief", "wil" },
+	sw = { "na", "ya", "wa", "ni", "kwa", "katika", "mimi", "wewe", "yeye",
+		"sisi", "ninyi", "wao", "lakini", "asante", "habari", "nzuri", "vipi",
+		"wapi", "lini", "sana", "ndiyo", "hapana", "nataka" },
+	sq = { "dhe", "është", "eshte", "nuk", "një", "nje", "unë", "une", "ti",
+		"ai", "ajo", "ne", "ju", "ata", "me", "por", "faleminderit",
+		"përshëndetje", "mire", "mirë", "si", "ku", "kur", "shumë", "shume",
+		"dua" },
+	eo = { "la", "kaj", "estas", "ne", "unu", "mi", "vi", "li", "ŝi", "si",
+		"ni", "ili", "kun", "sed", "dankon", "saluton", "bone", "kiel", "kie",
+		"kiam", "tre", "jes", "volas" },
+	az = { "və", "ve", "bir", "bu", "mən", "men", "sən", "sen", "o", "biz",
+		"siz", "onlar", "deyil", "üçün", "ucun", "ilə", "ile", "amma", "sağol",
+		"sagol", "salam", "necə", "nece", "harada", "çox", "cox", "yox",
+		"istəyirəm" },
+	fa = { "و", "از", "که", "در", "این", "است", "را", "با", "برای", "من", "تو",
+		"او", "ما", "شما", "آنها", "نه", "بله", "ممنون", "سلام", "خوب", "چطور",
+		"کجا", "کی", "بسیار", "خداحافظ", "حال" },
+	ur = { "اور", "ہے", "میں", "کی", "سے", "نہیں", "یہ", "وہ", "آپ", "ہم",
+		"تم", "کیا", "کیسے", "کہاں", "کب", "شکریہ", "سلام", "ٹھیک", "اچھا",
+		"بہت", "لیکن", "جی", "ہوں", "کرتے" },
+	ar = { "و", "من", "في", "على", "أن", "ان", "هو", "هي", "نحن", "أنت",
+		"انت", "لا", "نعم", "ما", "كيف", "أين", "اين", "متى", "شكرا", "مرحبا",
+		"السلام", "عليكم", "جيد", "كثير", "لكن", "هذا", "هذه", "حال" },
+	he = { "שלום", "מה", "זה", "לא", "כן", "אני", "אתה", "את", "הוא", "היא",
+		"אנחנו", "אתם", "הם", "איך", "איפה", "מתי", "תודה", "טוב", "מאוד", "אבל",
+		"אתה", "שלומך" },
+	hi = { "और", "है", "मैं", "तुम", "आप", "वह", "हम", "नहीं", "क्या", "कैसे",
+		"कहाँ", "कब", "धन्यवाद", "नमस्ते", "अच्छा", "बहुत", "लेकिन", "हाँ",
+		"ठीक", "कैसे", "हैं" },
+	mr = { "आणि", "आहे", "मी", "तू", "तुम्ही", "तो", "ती", "आम्ही", "नाही",
+		"काय", "कसे", "कुठे", "कधी", "धन्यवाद", "नमस्कार", "चांगले", "खूप",
+		"पण" },
+	ne = { "र", "छ", "म", "तिमी", "तपाईं", "उनी", "हामी", "छैन", "के", "कसरी",
+		"कहाँ", "कहिले", "धन्यवाद", "नमस्ते", "राम्रो", "धेरै", "तर" },
+	bn = { "এবং", "আছে", "আমি", "তুমি", "আপনি", "সে", "আমরা", "না", "কি",
+		"কেমন", "কোথায়", "কখন", "ধন্যবাদ", "হ্যালো", "ভালো", "খুব", "কিন্তু" },
+	pa = { "ਅਤੇ", "ਹੈ", "ਮੈਂ", "ਤੂੰ", "ਤੁਸੀਂ", "ਉਹ", "ਅਸੀਂ", "ਨਹੀਂ", "ਕੀ",
+		"ਕਿਵੇਂ", "ਕਿੱਥੇ", "ਕਦੋਂ", "ਧੰਨਵਾਦ", "ਸਤ", "ਚੰਗਾ", "ਬਹੁਤ" },
+	gu = { "અને", "છે", "હું", "તું", "તમે", "તે", "અમે", "નહીં", "શું",
+		"કેવી", "ક્યાં", "ક્યારે", "આભાર", "નમસ્તે", "સારું", "ખૂબ" },
+	["or"] = { "ଏବଂ", "ଅଛି", "ମୁଁ", "ତୁମେ", "ସେ", "ଆମେ", "ନାହିଁ", "କଣ", "କେମିତି",
+		"କେଉଁଠି", "ଧନ୍ୟବାଦ", "ନମସ୍କାର", "ଭଲ" },
+	ta = { "மற்றும்", "உள்ளது", "நான்", "நீ", "நீங்கள்", "அவர்", "நாங்கள்",
+		"இல்லை", "என்ன", "எப்படி", "எங்கே", "எப்போது", "நன்றி", "வணக்கம்",
+		"நல்ல", "மிக" },
+	te = { "మరియు", "ఉంది", "నేను", "నీవు", "మీరు", "అతను", "మేము",
+		"లేదు", "ఏమి", "ఎలా", "ఎక్కడ", "ఎప్పుడు", "ధన్యవాదాలు", "నమస్కారం",
+		"మంచి", "చాలా" },
+	kn = { "ಮತ್ತು", "ಇದೆ", "ನಾನು", "ನೀನು", "ನೀವು", "ಅವರು", "ನಾವು", "ಇಲ್ಲ",
+		"ಏನು", "ಹೇಗೆ", "ಎಲ್ಲಿ", "ಯಾವಾಗ", "ಧನ್ಯವಾದ", "ನಮಸ್ಕಾರ", "ಒಳ್ಳೆಯ" },
+	ml = { "ഒപ്പം", "ഉണ്ട്", "ഞാൻ", "നീ", "നിങ്ങൾ", "അവൻ", "ഞങ്ങൾ", "ഇല്ല",
+		"എന്ത്", "എങ്ങനെ", "എവിടെ", "എപ്പോൾ", "നന്ദി", "നമസ്കാരം", "നല്ല" },
+	si = { "සහ", "ඇත", "මම", "ඔබ", "ඔහු", "අපි", "නැත", "මොකක්ද", "කොහොමද",
+		"කොහෙද", "ස්තූතියි", "ආයුබෝවන්", "හොඳ" },
+	th = { "และ", "คือ", "ฉัน", "คุณ", "เขา", "เรา", "ไม่", "อะไร", "ยังไง",
+		"ที่ไหน", "เมื่อไหร่", "ขอบคุณ", "สวัสดี", "ดี", "มาก", "แต่" },
+	lo = { "ແລະ", "ແມ່ນ", "ຂ້ອຍ", "ເຈົ້າ", "ເຂົາ", "ເຮົາ", "ບໍ່", "ຫຍັງ",
+		"ແນວໃດ", "ຢູ່ໃສ", "ຂອບໃຈ", "ສະບາຍດີ", "ດີ" },
+	my = { "နှင့်", "သည်", "ငါ", "မင်း", "သူ", "ကျွန်တော်", "မဟုတ်", "ဘာ",
+		"ဘယ်လို", "ဘယ်မှာ", "ကျေးဇူးတင်ပါတယ်", "မင်္ဂလာပါ", "ကောင်း" },
+	km = { "និង", "គឺ", "ខ្ញុំ", "អ្នក", "គាត់", "យើង", "មិន", "អ្វី", "យ៉ាងណា",
+		"ឯណា", "អរគុណ", "សួស្តី", "ល្អ" },
+	ja = { "は", "が", "を", "に", "で", "と", "の", "です", "ます", "ない",
+		"これ", "それ", "ありがとう", "こんにちは", "元気", "とても", "でも" },
+	ko = { "그리고", "은", "는", "이", "가", "을", "를", "에", "입니다", "있어요",
+		"없어요", "고마워", "안녕하세요", "좋아요", "매우", "하지만", "저는" },
+	zh = { "的", "是", "我", "你", "他", "她", "我们", "不", "什么", "怎么",
+		"哪里", "谢谢", "你好", "很好", "非常", "但是", "这个" },
 }
 
 -- English stopwords. Without them, ordinary English scored stray hits on
 -- Spanish/Italian words ("no", "son", "con", "a") and got sent to the
 -- translator for no reason.
 LANG.words.en = {
-	"the", "and", "is", "are", "was", "were", "you", "your", "to", "of", "it", "its",
-	"that", "this", "these", "those", "for", "with", "have", "has", "had", "not",
-	"but", "what", "how", "where", "why", "when", "who", "can", "will", "would",
-	"should", "could", "do", "does", "did", "am", "be", "been", "my", "me", "we",
-	"our", "they", "them", "their", "he", "she", "his", "her", "just", "like",
-	"get", "got", "going", "gonna", "wanna", "there", "here", "about", "from",
-	"out", "off", "up", "down", "on", "in", "at", "so", "if", "or", "no", "yes",
-	"ok", "okay", "hi", "hello", "thanks", "thank", "please", "sorry", "lol",
-	"bro", "dude", "guys", "good", "bad", "nice", "cool", "really", "very", "much",
-	"some", "any", "all", "one", "two", "now", "also", "too", "than", "then",
+	"the", "and", "is", "are", "was", "were", "you", "your", "to", "of", "it",
+	"its", "that", "this", "these", "those", "for", "with", "have", "has", "had",
+	"not", "but", "what", "how", "where", "why", "when", "who", "can", "will",
+	"would", "should", "could", "do", "does", "did", "am", "be", "been", "my",
+	"me", "we", "our", "they", "them", "their", "he", "she", "his", "her",
+	"just", "like", "get", "got", "going", "gonna", "wanna", "there", "here",
+	"about", "from", "out", "off", "up", "down", "on", "in", "at", "so", "if",
+	"or", "no", "yes", "ok", "okay", "hi", "hello", "thanks", "thank", "please",
+	"sorry", "lol", "bro", "dude", "guys", "good", "bad", "nice", "cool",
+	"really", "very", "much", "some", "any", "all", "one", "two", "now", "also",
+	"too", "than", "then", "im", "ive", "id", "dont", "cant", "wont", "didnt",
+	"isnt", "arent", "wasnt", "youre", "theyre", "thats", "whats", "lets",
+	"yeah", "yep", "nah", "gg", "ez", "yo", "sup", "lmao", "idk", "pls", "plz",
+	"wait", "know", "think", "want", "need", "make", "take", "see", "say",
+	"tell", "come", "time", "day", "well", "new", "old", "hey", "man", "anyone",
+	"everyone", "someone", "nothing", "something", "again", "still", "only",
+	"even", "back", "first", "last", "never", "always", "because", "before",
+	"after", "while", "over", "under", "into", "through", "being", "made",
 }
+
+-- mark -> languages that use it (built once; unique marks count as strong proof)
+LANG.markIndex = {}
+for code, marks in pairs(LANG.marks) do
+	pcall(function()
+		for _, cp in utf8.codes(marks) do
+			local ch = utf8.char(cp)
+			local list = LANG.markIndex[ch]
+			if not list then
+				list = {}
+				LANG.markIndex[ch] = list
+			end
+			local found = false
+			for _, existing in ipairs(list) do
+				if existing == code then found = true end
+			end
+			if not found then list[#list + 1] = code end
+		end
+	end)
+end
 
 LANG.detectCache = {}
 LANG.translateCache = {}
 
-function LANG.displayName(code)
-	if not code or code == "" then return "?" end
-	return LANG.names[code] or code
+-- "pt-BR", "por", "Portuguese", "zh_Hans" -> "pt", "Portuguese"... -> a code
+function LANG.canonical(raw)
+	if not raw or raw == "" then return nil end
+	local s = tostring(raw):lower():gsub("^%s+", ""):gsub("%s+$", ""):gsub("_", "-")
+	if LANG.names[s] then return s end
+	if LANG.aliases[s] then return LANG.aliases[s] end
+	if LANG.codes[s] then return LANG.codes[s] end
+	local base = s:match("^([%a]+)")
+	if base then
+		if LANG.names[base] then return base end
+		if LANG.aliases[base] then return LANG.aliases[base] end
+	end
+	return base or s
 end
 
--- 0 requests: script ranges first, then function words. Returns code, confidence.
+-- Always a real language name in the UI, never a bare code.
+function LANG.displayName(code)
+	if not code or code == "" then return "Unknown" end
+	local canonical = LANG.canonical(code)
+	if canonical and LANG.names[canonical] then return LANG.names[canonical] end
+	local raw = tostring(code)
+	return raw:sub(1, 1):upper() .. raw:sub(2)
+end
+
+local function wordScore(lower, list)
+	local score = 0
+	for _, w in ipairs(list or {}) do
+		if string.find(lower, " " .. w .. " ", 1, true) then
+			score = score + 1
+		end
+	end
+	return score
+end
+
+-- 0 requests: writing system, then distinctive letters, then function words.
+-- Returns code, confidence (3 = script, 2 = words/letters, 0 = no idea).
 function LANG.detectLocal(text)
 	if not text or text == "" then return "en", 0 end
 
@@ -2564,39 +2895,75 @@ function LANG.detectLocal(text)
 	end)
 	if not ok then return "en", 0 end
 
-	local scriptLang, scriptCount = nil, 0
+	local lower = " " .. string.lower((text:gsub("[%p%c]", " "))) .. " "
+
+	if (hits.ja or 0) > 0 then return "ja", 3 end -- kana never appears in Chinese
+	if (hits.ko or 0) > 0 then return "ko", 3 end
+	if (hits.zh or 0) > 0 then return "zh", 3 end
+
+	local script, scriptCount = nil, 0
 	for code, n in pairs(hits) do
-		if n > scriptCount then scriptLang, scriptCount = code, n end
+		if n > scriptCount then
+			script, scriptCount = code, n
+		end
 	end
-	if scriptLang and scriptCount > 0 then
-		return scriptLang, 3
+	if script then
+		-- shared scripts: a unique letter names the language
+		for _, mark in ipairs(LANG.refineMarks[script] or {}) do
+			if string.find(text, mark, 1, true) then
+				script = LANG.refineMap[mark] or script
+				break
+			end
+		end
+		-- shared scripts: word evidence picks the family member
+		local family = LANG.family[script]
+		if family then
+			local pick, pickScore = script, 0
+			for _, member in ipairs(family) do
+				local score = wordScore(lower, LANG.words[member])
+				if score > pickScore then
+					pick, pickScore = member, score
+				end
+			end
+			if pickScore >= 2 then script = pick end
+		end
+		return script, 3
 	end
 
-	local lower = " " .. string.lower((text:gsub("[%p%c]", " "))) .. " "
-	local function wordScore(list)
-		local score = 0
-		for _, w in ipairs(list or {}) do
-			if string.find(lower, " " .. w .. " ", 1, true) then
-				score = score + 1
-			end
+	local scores = {}
+	local function add(code, n)
+		if code and n and n > 0 then
+			scores[code] = (scores[code] or 0) + n
 		end
-		return score
 	end
-	local bestLang, bestScore = nil, 0
-	for code, words in pairs(LANG.words) do
+
+	-- distinctive letters: unique to one language = strong, shared = a hint
+	for mark, codes in pairs(LANG.markIndex) do
+		if string.find(text, mark, 1, true) then
+			add(codes[1], (#codes == 1) and 3 or 1)
+		end
+	end
+
+	-- function words per language
+	for code, list in pairs(LANG.words) do
 		if code ~= "en" then
-			local score = wordScore(words)
-			if score > bestScore then
-				bestLang, bestScore = code, score
-			end
+			add(code, wordScore(lower, list))
 		end
 	end
-	local enScore = wordScore(LANG.words.en)
-	-- Only answer with a language when there is real evidence for it.
-	if bestLang and bestScore >= 2 and bestScore > enScore then
-		if bestScore >= 3 or bestScore >= enScore + 2 then
-			return bestLang, 2
+	local enScore = wordScore(lower, LANG.words.en)
+
+	local bestLang, bestScore = nil, 0
+	for code, score in pairs(scores) do
+		-- ties go to the alphabetically first code so the answer is stable
+		if score > bestScore or (score == bestScore and bestLang ~= nil and code < bestLang) then
+			bestLang, bestScore = code, score
 		end
+	end
+
+	-- Only answer with a language when the evidence clearly beats English.
+	if bestLang and bestScore >= 2 and bestScore > enScore
+		and (bestScore >= 3 or bestScore >= enScore + 2) then
+		return bestLang, bestScore >= 4 and 3 or 2
 	end
 	return "en", 0
 end
@@ -2628,7 +2995,7 @@ message. Do not add notes.]]
 	local translation = result:match("TRANSLATION:%s*([^\r\n]+)")
 	if lang then
 		lang = lang:lower():gsub("%s+", "")
-		lang = LANG.codes[lang] or lang
+		lang = LANG.canonical(lang)
 	end
 	if translation then
 		translation = trim(translation):gsub('^"(.*)"$', "%1")
@@ -2668,7 +3035,7 @@ TRANSLATION: <the translated answer, one line>]]
 	local out = result:match("TRANSLATION:%s*([^\r\n]+)")
 	if lang then
 		lang = lang:lower():gsub("%s+", "")
-		lang = LANG.codes[lang] or lang
+		lang = LANG.canonical(lang)
 	end
 	if not out then
 		local rest = result:gsub("^.-LANG:[^\r\n]*[\r\n]*", ""):gsub("TRANSLATION:%s*", "")
@@ -3283,7 +3650,7 @@ local function buildChatPanel()
 					suffix = "  (sending…)"
 				end
 			elseif tag and tag ~= "en" then
-				suffix = "  [" .. tag .. "]"
+				suffix = "  [" .. LANG.displayName(tag) .. "]"
 			end
 			msg._nameLbl.Text = msg.playerName .. suffix
 		end
@@ -3427,8 +3794,8 @@ local function buildChatPanel()
 		return b
 	end
 
-	addLangRow("Auto - match the line I reply to (as typed when not replying)", "auto")
-	addLangRow("English (send as typed, 0 requests)", "en")
+	addLangRow("Auto - match the language of the line I reply to", "auto")
+	addLangRow("English (send as typed, no translation)", "en")
 
 	local langOrder = {}
 	for code, name in pairs(LANG.names) do
@@ -3440,7 +3807,7 @@ local function buildChatPanel()
 		return string.lower(a.name) < string.lower(b.name)
 	end)
 	for _, entry in ipairs(langOrder) do
-		addLangRow(entry.name .. " (" .. entry.code .. ")", entry.code)
+		addLangRow(entry.name, entry.code)
 	end
 
 	langBtn.MouseButton1Click:Connect(function()

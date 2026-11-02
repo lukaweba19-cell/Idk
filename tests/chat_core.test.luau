@@ -229,7 +229,7 @@ do
 	local h = newHarness()
 	local C = h.CHAT
 
-	receive(h, 77, "Blz, eu vou dar peixe.")
+	receive(h, 77, "Eae mano, bora")
 	local target = C.messages[1]
 	local before = #h.calls
 
@@ -348,6 +348,107 @@ do
 	end
 	check("both listeners deliver one row only", #legacy.CHAT.messages == rows + 1, #legacy.CHAT.messages - rows)
 	check("both listeners cost 0 requests", #legacy.calls == 0, #legacy.calls)
+end
+
+
+----------------------------------------------------------------------
+-- 7. language names + comprehensive local detection
+----------------------------------------------------------------------
+do
+	local h = newHarness()
+	local L = h.LANG
+
+	check("name for fr", L.displayName("fr") == "French", L.displayName("fr"))
+	check("name for pt-BR", L.displayName("pt-BR") == "Portuguese", L.displayName("pt-BR"))
+	check("name for a full name", L.displayName("Portuguese") == "Portuguese", L.displayName("Portuguese"))
+	check("name for ISO 639-2", L.displayName("por") == "Portuguese", L.displayName("por"))
+	check("name for zh-Hans", L.displayName("zh-Hans") == "Chinese", L.displayName("zh-Hans"))
+
+	local unnamed, missing = {}, {}
+	for code in pairs(L.names) do
+		if L.displayName(code) == code then unnamed[#unnamed + 1] = code end
+	end
+	for _, list in ipairs({ L.words, L.marks }) do
+		for code in pairs(list) do
+			if not L.names[code] then missing[#missing + 1] = code end
+		end
+	end
+	for _, entry in ipairs(L.scripts) do
+		if not L.names[entry.code] then missing[#missing + 1] = entry.code end
+	end
+	check("every language shows a real name", #unnamed == 0, table.concat(unnamed, ","))
+	check("every detected code has a name", #missing == 0, table.concat(missing, ","))
+
+	local count = 0
+	for _ in pairs(L.names) do count = count + 1 end
+	check("selector offers 70+ languages", count >= 70, count)
+
+	local cases = {
+		{ "en", "ok bro i will be there in a minute" },
+		{ "en", "no i dont think so" },
+		{ "en", "Ok, eu vou dar peixe." },
+		{ "es", "No sé qué hacer mañana" },
+		{ "pt", "Eu não sei o que fazer" },
+		{ "fr", "Je ne sais pas quoi faire" },
+		{ "de", "Ich weiß nicht was du meinst" },
+		{ "it", "Non so cosa fare adesso" },
+		{ "nl", "Ik weet niet wat je bedoelt" },
+		{ "pl", "Dzień dobry, jak się masz?" },
+		{ "cs", "Nevím, co mám dělat" },
+		{ "tr", "Merhaba, nasılsın?" },
+		{ "ro", "Bună ziua, ce faci?" },
+		{ "hu", "Szia, hogy vagy?" },
+		{ "sv", "Jag vet inte vad du menar" },
+		{ "da", "Jeg ved ikke hvad du mener" },
+		{ "fi", "Minä en tiedä mitä sinä tarkoitat" },
+		{ "vi", "Xin chào bạn, bạn khỏe không?" },
+		{ "id", "Aku tidak tahu apa yang kamu mau" },
+		{ "tl", "Kumusta ka, salamat" },
+		{ "ru", "Привет, как дела?" },
+		{ "uk", "Привіт, як справи?" },
+		{ "bg", "Здравей, как си?" },
+		{ "sr", "Здраво, како си?" },
+		{ "el", "Γεια σου τι κάνεις" },
+		{ "ar", "مرحبا كيف حالك" },
+		{ "fa", "سلام حال شما چطور است" },
+		{ "ur", "ٹھیک ہے تم کیسے ہو" },
+		{ "he", "שלום מה שלומך" },
+		{ "hi", "नमस्ते आप कैसे हैं" },
+		{ "bn", "আপনি কেমন আছেন" },
+		{ "ta", "வணக்கம் நீங்கள் எப்படி இருக்கிறீர்கள்" },
+		{ "th", "สวัสดีครับ สบายดีไหม" },
+		{ "ja", "こんにちは元気ですか" },
+		{ "ko", "안녕하세요 반갑습니다" },
+		{ "zh", "你好吗我很高兴见到你" },
+		{ "ka", "გამარჯობა როგორ ხარ" },
+		{ "hy", "Բարեւ ինչպես ես" },
+	}
+	local wrong = {}
+	for _, case in ipairs(cases) do
+		local got = L.detectLocal(case[2])
+		if got ~= case[1] then
+			wrong[#wrong + 1] = string.format("%q -> %s (want %s)", case[2], got, case[1])
+		end
+	end
+	check("local detection on " .. #cases .. " samples", #wrong == 0, table.concat(wrong, " | "))
+end
+
+----------------------------------------------------------------------
+-- 8. replying to a locally detected language is still one request
+----------------------------------------------------------------------
+do
+	local h = newHarness()
+	local C = h.CHAT
+	receive(h, 88, "Eu não sei o que fazer")
+	local target = C.messages[1]
+	check("locally detected line gets a language tag", target.langHint == "pt", target.langHint)
+
+	C.replyTo(target)
+	local before = #h.calls
+	C.enqueueSend("hello there")
+	check("reply to a detected language = 1 request", #h.calls - before == 1, #h.calls - before)
+	check("that request translates into Portuguese",
+		string.find(tostring(last(h.calls).Body), "Portuguese", 1, true) ~= nil)
 end
 
 print("")
