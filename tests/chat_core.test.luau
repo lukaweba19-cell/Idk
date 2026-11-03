@@ -161,7 +161,10 @@ local function newHarness(opts)
 		end,
 	}
 
-	local osStub = { clock = function() return h.clock end, time = os.time }
+	-- os.clock is CPU time on Roblox and os.time is wall time: the core rests
+	-- on wall time, so bump() has to move both
+	local osStub = { clock = function() return h.clock end,
+		time = function() return math.floor(h.clock) end }
 	local taskStub = {
 		spawn = function(fn, ...)
 			local ok, err = pcall(fn, ...)
@@ -802,6 +805,74 @@ do
 	check("a whisper with no channel is not broadcast", #n.sent == 0, #n.sent)
 	check("the row says the whisper was not sent",
 		string.find(tostring(row.display), "not sent", 1, true) ~= nil, tostring(row.display))
+end
+
+----------------------------------------------------------------------
+-- 15. a Google hiccup must not strand the session on OpenRouter
+----------------------------------------------------------------------
+do
+	-- Google answers a throttled IP with a redirect to its "unusual traffic"
+	-- page (this is what a shared game-server IP gets). That is not a broken
+	-- translation and must not disable Google for the session.
+	local blocked = { on = true }
+	local h = newHarness({ google = true, respond = function(req)
+		if string.find(tostring(req.Url), "translate.googleapis.com", 1, true) then
+			if blocked.on then
+				return { StatusCode = 302,
+					Headers = { Location = "https://www.google.com/sorry/index?continue=x" },
+					Body = "<HTML><TITLE>302 Moved</TITLE>The document has moved</HTML>" }
+			end
+			return { StatusCode = 200, Body = '[[["Hola amigo",null,null,null,1]],null,"pt"]' }
+		end
+		return { StatusCode = 0, Body = "" }
+	end })
+	h.CHAT.setSpeakLang("es")
+	h.CHAT.enqueueSend("hello friend")
+	local told = table.concat(h.toasts, " | ")
+	check("a throttle page is named as a throttle", string.find(told, "unusual traffic", 1, true) ~= nil, told)
+	check("a throttle page is not called an unreadable answer",
+		string.find(told, "unreadable", 1, true) == nil, told)
+	check("a throttled google falls back once, not in a loop",
+		#h.calls == googleCalls(h) + 1, googleCalls(h) .. "/" .. #h.calls)
+	check("the rest is wall-clock seconds, not a session",
+		(type(h.GOOGLE.restUntil) == "number") and h.GOOGLE.restUntil <= 1000 + 120,
+		tostring(h.GOOGLE.restUntil))
+	check("the fallback reason mentions when google comes back",
+		string.find(table.concat({ h.API.lastError or "" }), "") ~= nil)
+
+	-- the next message after the rest goes back to Google on its own
+	blocked.on = false
+	h.bump(91)
+	h.CHAT.enqueueSend("second line")
+	check("google is tried again by itself", googleCalls(h) == 2, googleCalls(h))
+	local back = false
+	for _, t in ipairs(h.toasts) do
+		if string.find(t, "Switching to Google Translate", 1, true) then back = true end
+	end
+	check("coming back to google is announced", back, table.concat(h.toasts, " | "))
+	check("the second line is translated by google", last(h.sent) == "Hola amigo", last(h.sent))
+
+	-- a 429 also rests for a minute, not 15
+	local lim = newHarness({ google = true, googleStatus = 429 })
+	lim.CHAT.setSpeakLang("es")
+	lim.CHAT.enqueueSend("hello friend")
+	check("a 429 rests google for a minute, not the session",
+		lim.GOOGLE.restUntil <= 1000 + 60, tostring(lim.GOOGLE.restUntil))
+	lim.CHAT.enqueueSend("again")
+	check("a rested google is skipped for that message", googleCalls(lim) == 1, googleCalls(lim))
+	lim.bump(61)
+	lim.CHAT.enqueueSend("and again")
+	check("after the minute google is tried again", googleCalls(lim) == 2, googleCalls(lim))
+
+	-- and when both engines fail the line says both reasons, not just one
+	local none = newHarness({ google = true, googleStatus = 429, genv = {}, files = {} })
+	none.API.keys = function() return {} end
+	none.CHAT.setSpeakLang("es")
+	none.CHAT.enqueueSend("hello friend")
+	local shown = table.concat(none.toasts, " | ")
+	check("a total failure shows the google reason too",
+		string.find(shown, "Google: ", 1, true) ~= nil, shown)
+	check("a total failure still sends something", #none.sent == 1, #none.sent)
 end
 
 print("")

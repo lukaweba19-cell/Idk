@@ -2546,6 +2546,15 @@ local function httpRequest(opts)
 	return nil
 end
 
+-- Wall time, not os.clock(): on Roblox os.clock() is CPU time and it barely
+-- moves while a request is yielding, so a rest measured with it outlives the
+-- session - one Google hiccup would strand the panel on OpenRouter for good.
+function API.nowWall()
+	local ok, t = pcall(function() return os.time() end)
+	if ok and type(t) == "number" then return t end
+	return os.clock()
+end
+
 function API.errorFor(status, body)
 	if status == 401 then
 		return "OpenRouter key rejected (401) - add a working one in the Keys tab"
@@ -2609,7 +2618,7 @@ end
 -- ready keys first (the one that worked last time on top), rested keys last
 -- and soonest-ready first, so an all-limited set still gets tried
 function API.orderedKeys()
-	local now = os.clock()
+	local now = API.nowWall()
 	local ready, resting = {}, {}
 	for _, k in ipairs(API.keys()) do
 		local cd = API.cooling[k]
@@ -2712,7 +2721,7 @@ end
 function API.keyStatus(key)
 	local cd = API.cooling[key]
 	if not cd then return "ready" end
-	local left = math.ceil(cd.readyAt - os.clock())
+	local left = math.ceil(cd.readyAt - API.nowWall())
 	if left <= 0 then return "ready" end
 	return "rests " .. left .. "s"
 end
@@ -2759,7 +2768,7 @@ function API.restKey(key, status, res)
 		local secs = tonumber(after)
 		if secs and secs > 0 and secs <= 120 then wait = secs end
 	end
-	API.cooling[key] = { readyAt = os.clock() + wait, status = status }
+	API.cooling[key] = { readyAt = API.nowWall() + wait, status = status }
 end
 
 -- one logical call; extra HTTP requests only happen after a real failure
@@ -3373,7 +3382,9 @@ end
 -- makes translation slower. Set getgenv().GOOGLE_TRANSLATE = false to skip it
 -- entirely.
 local GOOGLE = {
-	cooldown = 900, -- 15 minutes off after a 429/403
+	cooldown = 60, -- seconds off after a 429/403: short, so Google is back soon
+	blockRest = 90, -- seconds off when Google shows its "unusual traffic" page
+	hiccupRest = 15, -- seconds off after a dropped or unreadable answer
 	restUntil = 0,
 	lastError = nil,
 }
@@ -3394,12 +3405,18 @@ function GOOGLE.enabled()
 end
 
 function GOOGLE.available()
-	return GOOGLE.enabled() and os.clock() >= (GOOGLE.restUntil or 0)
+	return GOOGLE.enabled() and API.nowWall() >= (GOOGLE.restUntil or 0)
 end
 
 function GOOGLE.rest(seconds, err)
-	GOOGLE.restUntil = os.clock() + (seconds or GOOGLE.cooldown)
+	GOOGLE.restUntil = API.nowWall() + (seconds or GOOGLE.cooldown)
 	GOOGLE.lastError = err
+end
+
+-- a failed call that also says when Google gets its next chance
+function GOOGLE.fail(what, seconds)
+	GOOGLE.rest(seconds, what)
+	return nil, nil, what .. " - Google is tried again in " .. tostring(seconds) .. "s"
 end
 
 -- ------------------------------------------------------------------
@@ -3450,7 +3467,7 @@ end
 function API.googleReason(err)
 	if not GOOGLE.enabled() then return "Google Translate is switched off" end
 	if not GOOGLE.available() then
-		local left = math.max(0, math.ceil((GOOGLE.restUntil or 0) - os.clock()))
+		local left = math.max(0, math.ceil((GOOGLE.restUntil or 0) - API.nowWall()))
 		return "Google Translate is resting for " .. tostring(left) .. "s"
 			.. (err and (" - " .. tostring(err)) or "")
 	end
@@ -3484,24 +3501,32 @@ function GOOGLE.translate(text, target)
 		Headers = { ["User-Agent"] = "Mozilla/5.0" },
 	})
 	if not res then
-		GOOGLE.rest(120, "no response from Google Translate")
-		return nil, nil, "no response from Google Translate"
+		return GOOGLE.fail("Google Translate did not answer", GOOGLE.hiccupRest)
 	end
 	local status = res.StatusCode or res.Status or 200
 	local raw = res.Body or ""
 	if status == 429 or status == 403 then
-		GOOGLE.rest(GOOGLE.cooldown, "Google Translate limit reached")
-		return nil, nil, "Google Translate limit reached"
+		return GOOGLE.fail("Google Translate is rate limiting this server", GOOGLE.cooldown)
+	end
+	-- a throttled IP does not get a limit header: Google redirects to its
+	-- "unusual traffic" page instead, which is not a broken translation
+	if status >= 300 and status < 400 then
+		return GOOGLE.fail("Google Translate sent its 'unusual traffic' page", GOOGLE.blockRest)
 	end
 	if status < 200 or status >= 300 then
-		GOOGLE.rest(120, "Google Translate HTTP " .. tostring(status))
-		return nil, nil, "google translate HTTP " .. tostring(status)
+		return GOOGLE.fail("Google Translate HTTP " .. tostring(status), GOOGLE.hiccupRest)
 	end
 	local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
 	local pieces = ok and data and data[1]
 	if type(pieces) ~= "table" then
-		GOOGLE.rest(120, "Google Translate sent an unreadable answer")
-		return nil, nil, "google translate sent an unreadable answer"
+		-- the redirect followed to the throttle page: still Google, still a
+		-- throttle, just not a limit header
+		local lower = string.lower(tostring(raw))
+		if string.find(lower, "unusual traffic", 1, true)
+			or string.find(lower, "sorry/index", 1, true) then
+			return GOOGLE.fail("Google Translate sent its 'unusual traffic' page", GOOGLE.blockRest)
+		end
+		return GOOGLE.fail("Google Translate sent an unreadable answer", GOOGLE.hiccupRest)
 	end
 	local parts = {}
 	for _, piece in ipairs(pieces) do
@@ -3511,8 +3536,7 @@ function GOOGLE.translate(text, target)
 	end
 	local out = trim(table.concat(parts))
 	if out == "" then
-		GOOGLE.rest(120, "Google Translate sent nothing")
-		return nil, nil, "google translate sent nothing"
+		return GOOGLE.fail("Google Translate sent nothing", GOOGLE.hiccupRest)
 	end
 	-- the detected source language sits in the head of the reply, but the
 	-- element before it is null, so scan a few slots for the code
@@ -3559,7 +3583,9 @@ message. Do not add notes.]]
 		user = "(probable language: " .. LANG.names[hint] .. ")\n" .. text
 	end
 	local result, err = callOpenRouter(system, user)
-	if not result then return nil, nil, err or "detection failed" end
+	if not result then
+		return nil, nil, (err or "detection failed") .. " (Google: " .. tostring(gerr or "no answer") .. ")"
+	end
 	result = result:gsub("```%w*", ""):gsub("```", ""):gsub("%*%*", "")
 	local lang = result:match("LANG:%s*([%a%-]+)")
 	local translation = result:match("TRANSLATION:%s*([^\r\n]+)")
@@ -3600,7 +3626,9 @@ function API.translate(text, langCode)
 		.. "Reply with ONLY the translated sentence: no quotes, no notes, no language tags. "
 		.. "Keep slang, tone and names. If it is already in " .. name .. ", repeat it unchanged."
 	local out, err = callOpenRouter(system, text)
-	if not out or out == "" then return nil, err or "translation failed" end
+	if not out or out == "" then
+		return nil, (err or "translation failed") .. " (Google: " .. tostring(gerr or "no answer") .. ")"
+	end
 	return trim(out):gsub('^"(.*)"$', "%1")
 end
 
@@ -3651,7 +3679,9 @@ LANG: <ISO 639-1 code of the language you translated into>
 TRANSLATION: <the translated answer, one line>]]
 	local user = "Message being answered:\n" .. original .. "\n\nMy answer:\n" .. text
 	local result, err = callOpenRouter(system, user)
-	if not result then return nil, nil, err or "translation failed" end
+	if not result then
+		return nil, nil, (err or "translation failed") .. " (Google: " .. tostring(gerr or "no answer") .. ")"
+	end
 	result = result:gsub("```%w*", ""):gsub("```", ""):gsub("%*%*", "")
 	local lang = result:match("LANG:%s*([%a%-]+)")
 	local out = result:match("TRANSLATION:%s*([^\r\n]+)")
