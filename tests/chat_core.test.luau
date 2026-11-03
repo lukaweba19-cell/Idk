@@ -41,7 +41,7 @@ local core = string.sub(source, sPos, ePos + #END_MARK)
 
 local function newHarness(opts)
 	opts = opts or {}
-	local h = { calls = {}, sent = {}, clock = 1000, modern = {}, legacy = {} }
+	local h = { calls = {}, sent = {}, whisperSent = {}, toasts = {}, clock = 1000, modern = {}, legacy = {} }
 
 	local function bump(sec) h.clock = h.clock + sec end
 	h.bump = bump
@@ -219,16 +219,17 @@ local function newHarness(opts)
 	-- Google is the primary path now, so tests opt in and the rest keep
 	-- exercising the OpenRouter fallback
 	if not opts.google then h.GOOGLE.rest(1000000000, "rested for this test") end
+	h.CHAT.notify = function(text) h.toasts[#h.toasts + 1] = tostring(text) end
 	h.CHAT.startListening() -- what the script does once its panel is built
 	return h
 end
 
-local function receive(h, userId, text, channelName)
+local function receive(h, userId, text, channelName, channelObj)
 	for _, fn in ipairs(h.modern) do
 		fn({
 			Text = text,
 			TextSource = { UserId = userId },
-			TextChannel = channelName and { Name = channelName } or nil,
+			TextChannel = channelObj or (channelName and { Name = channelName } or nil),
 		})
 	end
 end
@@ -532,7 +533,8 @@ do
 	check("stranger in general shown", C.isVisible(C.messages[2]) == true)
 	check("team row hidden", C.isVisible(C.messages[3]) == false)
 	check("trade row hidden", C.isVisible(C.messages[4]) == false)
-	check("whisper row hidden", C.isVisible(C.messages[5]) == false)
+	check("whisper row shown", C.isVisible(C.messages[5]) == true)
+	check("whisper row is badged", C.messages[5].whisper ~= nil, tostring(C.messages[5].whisper))
 
 	C.enqueueSend("my own line")
 	check("my own line shown", C.isVisible(last(C.messages)) == true)
@@ -695,6 +697,111 @@ do
 	local okNoFs, whyNoFs = noFs.API.addKey("sk-or-v1-newkeydddddddddddddddd")
 	check("an executor without files says so instead of pretending",
 		okNoFs == false and string.find(tostring(whyNoFs), "write", 1, true) ~= nil, whyNoFs)
+end
+
+----------------------------------------------------------------------
+-- 13. translation method picker and the engine switch toast
+----------------------------------------------------------------------
+do
+	-- OpenRouter only: Google is never called
+	local h = newHarness({ google = true })
+	h.CHAT.setMethod("openrouter")
+	check("picking a method is announced",
+		string.find(last(h.toasts) or "", "OpenRouter only", 1, true) ~= nil, last(h.toasts))
+	h.CHAT.setSpeakLang("es")
+	h.CHAT.enqueueSend("hello friend")
+	check("openrouter only skips google", googleCalls(h) == 0, googleCalls(h))
+	check("openrouter only makes one request", #h.calls == 1, #h.calls)
+	check("openrouter only still sends", last(h.sent) == "Hola amigo", last(h.sent))
+
+	-- Google only: a limited Google is reported, not silently replaced
+	local g = newHarness({ google = true, googleStatus = 429 })
+	g.CHAT.setMethod("google")
+	g.CHAT.setSpeakLang("es")
+	g.CHAT.enqueueSend("hello friend")
+	check("google only calls google", googleCalls(g) == 1, googleCalls(g))
+	check("google only never calls openrouter", #g.calls == googleCalls(g), #g.calls)
+	check("google only falls back to the typed text", last(g.sent) == "hello friend", last(g.sent))
+	local explained = table.concat(g.toasts, " | ")
+	check("google only says why it could not translate",
+		string.find(explained, "Google Translate is resting", 1, true) ~= nil, explained)
+
+	-- Auto: Google fails, OpenRouter answers, and that switch is announced once
+	local a = newHarness({ google = true, googleStatus = 429 })
+	a.CHAT.setSpeakLang("es")
+	a.CHAT.enqueueSend("hello friend")
+	check("auto falls back to openrouter", last(a.sent) == "Hola amigo", last(a.sent))
+	check("auto used google then openrouter", googleCalls(a) == 1 and #a.calls == 2,
+		googleCalls(a) .. "/" .. #a.calls)
+	local switched = false
+	for _, t in ipairs(a.toasts) do
+		if string.find(t, "Switching to OpenRouter", 1, true) then switched = true end
+	end
+	check("the switch to openrouter is announced", switched, table.concat(a.toasts, " | "))
+
+	local toastCount, callCount = #a.toasts, #a.calls
+	a.CHAT.enqueueSend("another line")
+	check("the switch is announced once, not per message", #a.toasts == toastCount, #a.toasts - toastCount)
+	check("a resting google is not retried", googleCalls(a) == 1, googleCalls(a))
+	check("the session stays on openrouter", #a.calls - callCount == 1, #a.calls - callCount)
+
+	-- and it goes back to Google when Google answers again
+	local limited = { on = true }
+	local b = newHarness({ google = true, respond = function(req)
+		if string.find(tostring(req.Url), "translate.googleapis.com", 1, true) then
+			if limited.on then
+				return { StatusCode = 429, Body = "limited", Headers = { ["retry-after"] = "30" } }
+			end
+			return { StatusCode = 200, Body = '[[["Hola amigo",null,null,null,1]],null,"pt"]' }
+		end
+		return { StatusCode = 200, Body = "Hola amigo" }
+	end })
+	b.CHAT.setSpeakLang("es")
+	b.CHAT.enqueueSend("first line")
+	limited.on = false
+	b.GOOGLE.restUntil = 0 -- the rest is over
+	b.CHAT.enqueueSend("second line")
+	local back = false
+	for _, t in ipairs(b.toasts) do
+		if string.find(t, "Switching to Google Translate", 1, true) then back = true end
+	end
+	check("returning to google is announced", back, table.concat(b.toasts, " | "))
+	check("google answered the second line", googleCalls(b) == 2, googleCalls(b))
+end
+
+----------------------------------------------------------------------
+-- 14. whispers: shown, badged, and answered in the whisper
+----------------------------------------------------------------------
+do
+	local h = newHarness()
+	local wh = { Name = "RBXWhisper:1_88",
+		SendAsync = function(_, text) h.whisperSent[#h.whisperSent + 1] = text end }
+	receive(h, 88, "e ai, tudo bem?", "RBXWhisper:1_88", wh)
+	local msg = last(h.CHAT.messages)
+	check("a whisper is kept in the list", msg ~= nil, msg and msg.original)
+	check("a whisper is visible", h.CHAT.isVisible(msg) == true)
+	check("a whisper is badged as a whisper", msg.whisper ~= nil, msg and tostring(msg.whisper))
+	check("a whisper costs no request", #h.calls == 0, #h.calls)
+	check("team chat stays hidden", h.CHAT.isVisible({ channel = "RBXTeam" }) == false)
+
+	h.CHAT.replyTo(msg)
+	h.CHAT.setSpeakLang("es")
+	h.CHAT.enqueueSend("i am fine thanks")
+	check("the whisper reply is translated", last(h.whisperSent) == "Hola amigo", last(h.whisperSent))
+	check("the whisper reply goes to the whisper only", #h.sent == 0, #h.sent)
+	check("the whisper reply is still one request", #h.calls == 1, #h.calls)
+
+	-- no usable whisper channel: refuse instead of leaking it to general chat
+	local n = newHarness()
+	receive(n, 77, "psst", "RBXWhisper:1_77")
+	local m2 = last(n.CHAT.messages)
+	n.CHAT.replyTo(m2)
+	n.CHAT.setSpeakLang("es")
+	n.CHAT.enqueueSend("hello")
+	local row = last(n.CHAT.messages)
+	check("a whisper with no channel is not broadcast", #n.sent == 0, #n.sent)
+	check("the row says the whisper was not sent",
+		string.find(tostring(row.display), "not sent", 1, true) ~= nil, tostring(row.display))
 end
 
 print("")

@@ -2503,6 +2503,7 @@ local CHAT = {
 	nextId = 0,
 	replyTarget = nil,
 	speakLang = "auto", -- "auto" = send as typed, or match the message being replied to
+	method = "auto", -- "auto" = Google then OpenRouter, "google" / "openrouter" = only that one
 	sending = false,
 	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
 	pendingEcho = {}, -- signature -> local row waiting for its own echo
@@ -2766,7 +2767,7 @@ end
 local function callOpenRouter(systemPrompt, userPrompt)
 	local lastErr = "unknown error"
 	local keys = API.orderedKeys()
-	if #keys == 0 then return nil, "no OpenRouter key is set" end
+	if #keys == 0 then return nil, "no OpenRouter key is set - add one in the Keys tab" end
 	local budget = math.min(#keys + 2, API.maxAttempts)
 	for _, model in ipairs(API.models) do
 		local modelProblem = false
@@ -3401,6 +3402,77 @@ function GOOGLE.rest(seconds, err)
 	GOOGLE.lastError = err
 end
 
+-- ------------------------------------------------------------------
+-- Which engine may answer: the picker in the panel header decides
+--   "auto"       Google first, OpenRouter only when Google fails
+--   "google"     Google only - a failed call says so, it does not switch
+--   "openrouter" OpenRouter only - Google is never called
+-- ------------------------------------------------------------------
+function CHAT.methodShort(mode)
+	mode = mode or CHAT.method or "auto"
+	if mode == "google" then return "Google" end
+	if mode == "openrouter" then return "OpenRouter" end
+	return "Auto"
+end
+
+function CHAT.methodLabel(mode)
+	mode = mode or CHAT.method or "auto"
+	if mode == "google" then return "Google Translate only" end
+	if mode == "openrouter" then return "OpenRouter only" end
+	return "Auto - Google first, OpenRouter as backup"
+end
+
+-- 0 requests: a deliberate choice, not a switch, so it does not double toast
+function CHAT.setMethod(mode)
+	if mode ~= "auto" and mode ~= "google" and mode ~= "openrouter" then mode = "auto" end
+	CHAT.method = mode
+	API.engine = nil
+	-- picking Google is also a "try Google again": a resting Google would
+	-- otherwise keep the next message on OpenRouter against your choice
+	if mode ~= "openrouter" then GOOGLE.restUntil = 0 end
+	CHAT.notify("Translation method: " .. CHAT.methodLabel(mode))
+	CHAT.onState()
+end
+
+function API.googleWanted()
+	return (CHAT.method or "auto") ~= "openrouter"
+end
+
+function API.openrouterAllowed()
+	return (CHAT.method or "auto") ~= "google"
+end
+
+function API.tryGoogle()
+	return API.googleWanted() and GOOGLE.available()
+end
+
+-- why Google could not answer, in words that can be acted on
+function API.googleReason(err)
+	if not GOOGLE.enabled() then return "Google Translate is switched off" end
+	if not GOOGLE.available() then
+		local left = math.max(0, math.ceil((GOOGLE.restUntil or 0) - os.clock()))
+		return "Google Translate is resting for " .. tostring(left) .. "s"
+			.. (err and (" - " .. tostring(err)) or "")
+	end
+	return (err and tostring(err)) or "Google Translate did not answer"
+end
+
+-- exactly one toast per change of engine, never one per message
+function API.markEngine(name, why)
+	if API.engine == name then return end
+	local before = API.engine
+	API.engine = name
+	-- the first ever call is not a "switch" - unless Google was skipped for a
+	-- reason, which is exactly what the user needs to hear about
+	if before == nil and not (name == "openrouter" and why) then return end
+	if name == "openrouter" then
+		CHAT.notify(utf8.char(9888) .. " Switching to OpenRouter"
+			.. (why and (" - " .. tostring(why)) or ""))
+	else
+		CHAT.notify(utf8.char(9989) .. " Switching to Google Translate")
+	end
+end
+
 -- returns translated, detectedLanguage, err
 function GOOGLE.translate(text, target)
 	if not GOOGLE.available() then return nil, nil, "google translate is resting" end
@@ -3419,8 +3491,7 @@ function GOOGLE.translate(text, target)
 	local raw = res.Body or ""
 	if status == 429 or status == 403 then
 		GOOGLE.rest(GOOGLE.cooldown, "Google Translate limit reached")
-		CHAT.notify(utf8.char(9888) .. " Google Translate limit reached - OpenRouter takes over")
-		return nil, nil, "google translate limit reached"
+		return nil, nil, "Google Translate limit reached"
 	end
 	if status < 200 or status >= 300 then
 		GOOGLE.rest(120, "Google Translate HTTP " .. tostring(status))
@@ -3458,14 +3529,23 @@ end
 
 function API.detectAndTranslate(text, hint)
 	-- Google first: detects the language and translates in one free call
-	if GOOGLE.available() then
-		local out, detected = GOOGLE.translate(text, "en")
+	local gerr = nil
+	if API.tryGoogle() then
+		local out, detected, werr = GOOGLE.translate(text, "en")
 		if out and out ~= "" then
+			API.markEngine("google")
 			local lang = detected or hint or "en"
 			if not LANG.names[lang] then lang = LANG.canonical(lang) end
 			return lang, out, nil
 		end
+		gerr = werr
+	elseif API.googleWanted() then
+		gerr = API.googleReason(nil)
 	end
+	if not API.openrouterAllowed() then
+		return nil, nil, API.googleReason(gerr) .. " and OpenRouter is off in the picker"
+	end
+	API.markEngine("openrouter", gerr)
 	local system = [[You are a precise language identifier and translator.
 Read the user's message and reply in EXACTLY this format, nothing else:
 LANG: <ISO 639-1 code of the message's own language>
@@ -3500,10 +3580,21 @@ end
 -- 1 request: translate into a known language.
 function API.translate(text, langCode)
 	-- Google first: free and one call
-	if GOOGLE.available() then
-		local out = GOOGLE.translate(text, langCode)
-		if out and out ~= "" then return out, nil end
+	local gerr = nil
+	if API.tryGoogle() then
+		local out, _, werr = GOOGLE.translate(text, langCode)
+		if out and out ~= "" then
+			API.markEngine("google")
+			return out, nil
+		end
+		gerr = werr
+	elseif API.googleWanted() then
+		gerr = API.googleReason(nil)
 	end
+	if not API.openrouterAllowed() then
+		return nil, API.googleReason(gerr) .. " and OpenRouter is off in the picker"
+	end
+	API.markEngine("openrouter", gerr)
 	local name = LANG.displayName(langCode)
 	local system = "Translate the user's message into " .. name .. " (" .. langCode .. "). "
 		.. "Reply with ONLY the translated sentence: no quotes, no notes, no language tags. "
@@ -3518,24 +3609,40 @@ end
 function API.translateLike(text, original)
 	-- Google first: work out the language being answered (0 or 1 free call),
 	-- then translate the answer into it (1 more). OpenRouter only if that fails.
-	if GOOGLE.available() then
+	local gerr = nil
+	if API.tryGoogle() then
 		local target = nil
 		local cached = LANG.detectCache[original]
 		if cached and cached.lang then target = cached.lang end
 		if not target then
-			local _, detected = GOOGLE.translate(original, "en")
+			local _, detected, werr = GOOGLE.translate(original, "en")
 			if detected then
 				target = detected
 				LANG.detectCache[original] = LANG.detectCache[original]
 					or { lang = detected, translation = nil }
+			else
+				gerr = werr
 			end
 		end
 		if target then
-			if target == "en" then return text, "en", nil end
-			local out = GOOGLE.translate(text, target)
-			if out and out ~= "" then return out, target, nil end
+			if target == "en" then
+				API.markEngine("google")
+				return text, "en", nil
+			end
+			local out, _, werr2 = GOOGLE.translate(text, target)
+			if out and out ~= "" then
+				API.markEngine("google")
+				return out, target, nil
+			end
+			gerr = werr2 or gerr
 		end
+	elseif API.googleWanted() then
+		gerr = API.googleReason(nil)
 	end
+	if not API.openrouterAllowed() then
+		return nil, nil, (gerr or "Google Translate did not answer") .. " and OpenRouter is off in the picker"
+	end
+	API.markEngine("openrouter", gerr)
 	local system = [[You are a translator inside a game chat.
 The user is answering a message written in another language. Translate the
 user's answer into that same language. Keep slang, tone and names.
@@ -3613,8 +3720,24 @@ local function prune()
 	end
 end
 
+-- RBXWhisper:<idA>_<idB> -> the other person's name, nil for any other channel
+function CHAT.whisperName(channelName)
+	if not channelName then return nil end
+	local name = string.lower(tostring(channelName))
+	if not string.find(name, "whisper", 1, true) then return nil end
+	for id in tostring(channelName):gmatch("%d+") do
+		local n = tonumber(id)
+		if n and n ~= player.UserId then
+			local plr = nil
+			pcall(function() plr = Players:GetPlayerByUserId(n) end)
+			return plr and (plr.DisplayName or plr.Name) or ("user" .. tostring(n))
+		end
+	end
+	return nil
+end
+
 -- 0 requests. Adds a chat line; only tags it with the free local guess.
-function CHAT.pushMessage(playerName, userId, text, channel)
+function CHAT.pushMessage(playerName, userId, text, channel, channelObj)
 	if type(text) ~= "string" then return nil end
 	text = trim(text)
 	if text == "" then return nil end
@@ -3659,6 +3782,8 @@ function CHAT.pushMessage(playerName, userId, text, channel)
 		mine = mine,
 		sent = mine or nil,
 		channel = channel or "RBXGeneral",
+		channelObj = channelObj,
+		whisper = CHAT.whisperName(channel),
 	}
 
 	-- free tagging only: nothing here talks to OpenRouter
@@ -3678,14 +3803,16 @@ function CHAT.pushMessage(playerName, userId, text, channel)
 	return msg
 end
 
--- 0 requests: which rows belong in the list. Only the general channel is
--- shown: team, whisper, trade and any other extra channel stays out.
+-- 0 requests: which rows belong in the list. General chat and whispers are
+-- shown (a whisper is badged so it can never be mistaken for public chat);
+-- team, trade and any other extra channel stays out.
 function CHAT.isVisible(msg)
 	if not msg then return false end
 	local name = string.lower(tostring(msg.channel or "RBXGeneral"))
-	if string.find(name, "team", 1, true) or string.find(name, "whisper", 1, true) then
+	if string.find(name, "team", 1, true) or string.find(name, "trade", 1, true) then
 		return false
 	end
+	if string.find(name, "whisper", 1, true) then return true end
 	return string.find(name, "general", 1, true) ~= nil
 end
 
@@ -3756,7 +3883,9 @@ function CHAT.buildOutgoing(text, target, inferFrom)
 end
 
 -- 0 requests: puts our line in the panel and sends it exactly once.
-function CHAT.dispatch(toSend, lang, channelName)
+-- channelObj is the real channel a whisper arrived on, which is the only
+-- place a script is allowed to put the answer back.
+function CHAT.dispatch(toSend, lang, channelName, channelObj)
 	toSend = trim(toSend)
 	if toSend == "" then return false end
 
@@ -3775,6 +3904,8 @@ function CHAT.dispatch(toSend, lang, channelName)
 		mine = true,
 		sent = false,
 		channel = channelName or "RBXGeneral",
+		channelObj = channelObj,
+		whisper = CHAT.whisperName(channelName),
 	}
 	-- registered before SendAsync yields, so the echo the server sends back
 	-- finds this row instead of adding a second copy of it
@@ -3785,8 +3916,19 @@ function CHAT.dispatch(toSend, lang, channelName)
 	CHAT.onNew(msg)
 
 	local sent = false
+	local whisperTo = CHAT.whisperName(msg.channel)
 	pcall(function()
 		local channels = TextChatService.TextChannels
+		if whisperTo then
+			-- a whisper only ever goes into its own channel: falling through to
+			-- the general channel would put a private line on public chat
+			local ch = msg.channelObj
+			if not ch and msg.channel then ch = channels:FindFirstChild(msg.channel) end
+			if ch then
+				sent = pcall(function() ch:SendAsync(toSend) end)
+			end
+			return
+		end
 		local channel = (channelName and channels:FindFirstChild(channelName))
 			or channels:FindFirstChild("RBXGeneral")
 		if not channel then
@@ -3802,7 +3944,7 @@ function CHAT.dispatch(toSend, lang, channelName)
 			sent = true
 		end
 	end)
-	if not sent then
+	if not sent and not whisperTo then
 		pcall(function()
 			local rs = game:GetService("ReplicatedStorage")
 			local events = rs:FindFirstChild("DefaultChatSystemChatEvents")
@@ -3815,7 +3957,12 @@ function CHAT.dispatch(toSend, lang, channelName)
 	end
 	if not sent then
 		CHAT.pendingEcho[sig] = nil
-		msg.display = toSend .. "  (not sent - chat channel unavailable)"
+		if whisperTo then
+			msg.display = toSend .. "  (not sent - no whisper channel open with "
+				.. tostring(whisperTo) .. "; Roblox does not let a script start one)"
+		else
+			msg.display = toSend .. "  (not sent - chat channel unavailable)"
+		end
 		CHAT.onUpdate(msg)
 		return false
 	end
@@ -3844,7 +3991,8 @@ function CHAT.enqueueSend(text)
 				CHAT.notify(utf8.char(9888) .. " Could not translate to "
 					.. LANG.displayName(usedLang) .. ": " .. tostring(terr))
 			end
-			if not CHAT.dispatch(toSend, usedLang, reply and reply.channel) then
+			if not CHAT.dispatch(toSend, usedLang, reply and reply.channel,
+				reply and reply.channelObj) then
 				CHAT.notify(utf8.char(9888) .. " Message was not sent")
 			end
 			if reply and usedLang and usedLang ~= "en" then
@@ -3923,7 +4071,7 @@ function CHAT.startListening()
 				local textChannel = textChatMessage.TextChannel
 				if textChannel then channelName = textChannel.Name end
 			end)
-			CHAT.pushMessage(name, src.UserId, textChatMessage.Text, channelName)
+			CHAT.pushMessage(name, src.UserId, textChatMessage.Text, channelName, textChatMessage.TextChannel)
 		end)
 	end)
 
@@ -3974,7 +4122,7 @@ local function buildChatPanel()
 
 	local cTitle = Instance.new("TextLabel")
 	cTitle.BackgroundTransparency = 1
-	cTitle.Size = UDim2.new(1, -110, 1, 0)
+	cTitle.Size = UDim2.new(1, -126, 1, 0)
 	cTitle.Position = UDim2.fromOffset(14, 0)
 	cTitle.Font = Enum.Font.GothamBold
 	cTitle.TextSize = 15
@@ -4074,6 +4222,80 @@ local function buildChatPanel()
 		langScroll.CanvasSize = UDim2.new(0, 0, 0, langLayout.AbsoluteContentSize.Y + 6)
 	end)
 
+	-- translation method picker, in the header next to Close ----------------
+	local cMethod = Instance.new("TextButton")
+	cMethod.Size = UDim2.fromOffset(60, 22)
+	cMethod.Position = UDim2.new(1, -122, 0.5, -11)
+	cMethod.BackgroundColor3 = PURPLE_DIM
+	cMethod.Text = CHAT.methodShort()
+	cMethod.Font = Enum.Font.GothamBold
+	cMethod.TextSize = 9
+	cMethod.TextColor3 = TEXT
+	cMethod.Parent = cHeader
+	Instance.new("UICorner", cMethod).CornerRadius = UDim.new(0, 5)
+
+	local methodMenu = Instance.new("Frame")
+	methodMenu.Size = UDim2.new(1, -16, 0, 0)
+	methodMenu.AutomaticSize = Enum.AutomaticSize.Y
+	methodMenu.Position = UDim2.fromOffset(8, 44)
+	methodMenu.BackgroundColor3 = PANEL
+	methodMenu.BorderSizePixel = 0
+	methodMenu.Visible = false
+	methodMenu.ZIndex = 30
+	methodMenu.Parent = chatPanel
+	Instance.new("UICorner", methodMenu).CornerRadius = UDim.new(0, 8)
+	Instance.new("UIStroke", methodMenu).Color = PURPLE
+	local methodPad = Instance.new("UIPadding", methodMenu)
+	methodPad.PaddingTop = UDim.new(0, 4)
+	methodPad.PaddingBottom = UDim.new(0, 4)
+	methodPad.PaddingLeft = UDim.new(0, 4)
+	methodPad.PaddingRight = UDim.new(0, 4)
+	local methodLayout = Instance.new("UIListLayout", methodMenu)
+	methodLayout.Padding = UDim.new(0, 3)
+	methodLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local function addMethodRow(label, mode)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1, 0, 0, 28)
+		b.BackgroundColor3 = BG
+		b.TextColor3 = TEXT
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 11
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.Text = "  " .. label
+		b.ZIndex = 31
+		b.Parent = methodMenu
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+		b.MouseButton1Click:Connect(function()
+			CHAT.setMethod(mode)
+			methodMenu.Visible = false
+		end)
+		return b
+	end
+	local methodRows = {
+		addMethodRow("🌐 Auto - Google first, OpenRouter as backup", "auto"),
+		addMethodRow("🔵 Google Translate only", "google"),
+		addMethodRow("🤖 OpenRouter only", "openrouter"),
+	}
+
+	local function refreshMethodUi()
+		local mode = CHAT.method or "auto"
+		cMethod.Text = CHAT.methodShort(mode)
+		cMethod.BackgroundColor3 = (mode == "openrouter") and PANEL or PURPLE_DIM
+		for i, row in ipairs(methodRows) do
+			local on = ({"auto", "google", "openrouter"})[i] == mode
+			row.TextColor3 = on and PURPLE or TEXT
+		end
+	end
+
+	cMethod.MouseButton1Click:Connect(function()
+		methodMenu.Visible = not methodMenu.Visible
+		if methodMenu.Visible then
+			langMenu.Visible = false
+			refreshMethodUi()
+		end
+	end)
+
 	-- messages -------------------------------------------------------------
 	local chatScroll = Instance.new("ScrollingFrame")
 	chatScroll.Size = UDim2.new(1, -16, 1, -146)
@@ -4169,7 +4391,8 @@ local function buildChatPanel()
 			else
 				langBtn.Text = "Reply in: their language  🔽"
 			end
-			local hint = "Replying to " .. reply.playerName
+			local hint = (reply.whisper and ("Replying in whisper to ") or ("Replying to "))
+				.. reply.playerName
 			if code and code ~= "en" then
 				hint = hint .. " in " .. LANG.displayName(code)
 			end
@@ -4211,7 +4434,9 @@ local function buildChatPanel()
 			elseif tag and tag ~= "en" then
 				bits[#bits + 1] = "[" .. LANG.displayName(tag) .. "]"
 			end
-			if msg.channel and msg.channel ~= "" and msg.channel ~= "RBXGeneral" then
+			if msg.whisper then
+				bits[#bits + 1] = utf8.char(128274) .. " whisper"
+			elseif msg.channel and msg.channel ~= "" and msg.channel ~= "RBXGeneral" then
 				bits[#bits + 1] = "(" .. tostring(msg.channel) .. ")"
 			end
 			local suffix = (#bits > 0) and ("  " .. table.concat(bits, " ")) or ""
@@ -4334,6 +4559,7 @@ local function buildChatPanel()
 	CHAT.onUpdate = paintRow
 	CHAT.onState = function()
 		refreshLangBar()
+		refreshMethodUi()
 		refreshSendUi()
 		applyChannelFilter()
 	end
@@ -4500,6 +4726,7 @@ local function buildChatPanel()
 	local function setLangMenu(open)
 		langMenu.Visible = open
 		if open then
+			methodMenu.Visible = false
 			langScroll.CanvasPosition = Vector2.new(0, 0)
 		end
 	end
