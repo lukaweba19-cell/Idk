@@ -37,7 +37,7 @@ local sPos = string.find(source, BEGIN, 1, true)
 local ePos = string.find(source, END_MARK, 1, true)
 assert(sPos and ePos and ePos > sPos, "CHAT_CORE markers not found in re.lua")
 local core = string.sub(source, sPos, ePos + #END_MARK)
-	.. "\nreturn { CHAT = CHAT, LANG = LANG, API = API }\n"
+	.. "\nreturn { CHAT = CHAT, LANG = LANG, API = API, GOOGLE = GOOGLE }\n"
 
 local function newHarness(opts)
 	opts = opts or {}
@@ -54,7 +54,14 @@ local function newHarness(opts)
 			return tostring(value)
 		end,
 		JSONDecode = function(_, raw)
-			return { choices = { { message = { content = tostring(raw) } } } }
+			raw = tostring(raw)
+			if string.sub(raw, 1, 2) == "[[" then
+				-- google gtx shape: [[[translated,...]],null,"detected"]
+				local translated = string.match(raw, '^%[%[%["(.-)"') or ""
+				local detected = string.match(raw, '%[%]%]%s*,%s*null%s*,%s*"([%a%-]+)"') or "pt"
+				return { { { translated } }, nil, detected }
+			end
+			return { choices = { { message = { content = raw } } } }
 		end,
 	}
 	h.HttpService = HttpService
@@ -62,6 +69,21 @@ local function newHarness(opts)
 	local function fakeRequest(req)
 		h.calls[#h.calls + 1] = req
 		if opts.respond then return opts.respond(req) end
+		local reqUrl = tostring(req.Url or "")
+		if string.find(reqUrl, "translate.googleapis.com", 1, true) then
+			h.googleCalls = (h.googleCalls or 0) + 1
+			if opts.googleStatus then
+				return { StatusCode = opts.googleStatus, Body = "limited" }
+			end
+			local target = string.match(reqUrl, "tl=([%w%%%-]+)") or "en"
+			local replies = {
+				en = "Ok, I will give fish.",
+				pt = "Ok, eu vou dar o peixe.",
+				es = "Hola amigo",
+			}
+			local text = replies[target] or "Hola amigo"
+			return { StatusCode = 200, Body = '[[["' .. text .. '",null,null,null,1]],null,"pt"]' }
+		end
 		local body = tostring(req.Body)
 		if string.find(body, "Message being answered", 1, true) then
 			return { StatusCode = 200, Body = "LANG: pt\nTRANSLATION: Ok, eu vou dar o peixe." }
@@ -182,7 +204,10 @@ local function newHarness(opts)
 
 	local chunk = luau.load(core, { environment = env, debug_name = "re.lua chat core" })
 	local loaded = chunk()
-	h.CHAT, h.LANG, h.API = loaded.CHAT, loaded.LANG, loaded.API
+	h.CHAT, h.LANG, h.API, h.GOOGLE = loaded.CHAT, loaded.LANG, loaded.API, loaded.GOOGLE
+	-- Google is the primary path now, so tests opt in and the rest keep
+	-- exercising the OpenRouter fallback
+	if not opts.google then h.GOOGLE.rest(1000000000, "rested for this test") end
 	h.CHAT.startListening() -- what the script does once its panel is built
 	return h
 end
@@ -198,6 +223,16 @@ local function receive(h, userId, text, channelName)
 end
 
 local function last(arr) return arr[#arr] end
+
+local function googleCalls(h)
+	local n = 0
+	for _, call in ipairs(h.calls) do
+		if string.find(tostring(call.Url), "translate.googleapis.com", 1, true) then
+			n = n + 1
+		end
+	end
+	return n
+end
 
 ----------------------------------------------------------------------
 -- 1. receiving chat: 0 requests, no auto translation
@@ -536,6 +571,71 @@ do
 		genv = { OPENROUTER_KEYS = { "k1", "k2", "k3", "k4", "k5", "k6", "k7" } },
 	})
 	check("never more than 5 keys", #many.API.keys() <= 5, #many.API.keys())
+end
+
+----------------------------------------------------------------------
+-- 11. Google Translate first, OpenRouter only as the fallback
+----------------------------------------------------------------------
+do
+	local h = newHarness({ google = true })
+	local C = h.CHAT
+	C.setSpeakLang("es")
+	C.enqueueSend("hello friend")
+	check("google answers first", googleCalls(h) == 1, googleCalls(h))
+	check("google got the target language", string.find(tostring(h.calls[1].Url), "tl=es", 1, true) ~= nil)
+	check("google translation was sent", last(h.sent) == "Hola amigo", last(h.sent))
+	check("one send is one request", #h.calls == 1, #h.calls)
+	check("openrouter untouched while google works", #h.calls == googleCalls(h))
+
+	-- manual translate: one google call, language comes from google
+	local m = newHarness({ google = true })
+	receive(m, 99, "Ok, eu vou dar peixe.")
+	m.CHAT.manualTranslate(m.CHAT.messages[1])
+	check("manual translate uses google", #m.calls == 1 and googleCalls(m) == 1, #m.calls)
+	check("google detected the language", m.CHAT.messages[1].lang == "pt", m.CHAT.messages[1].lang)
+	check("google gave the english line",
+		m.CHAT.messages[1].translated == "Ok, I will give fish.", m.CHAT.messages[1].translated)
+
+	-- replying through google lands in the answered language
+	local r = newHarness({ google = true })
+	receive(r, 77, "Eae mano, bora")
+	r.CHAT.replyTo(r.CHAT.messages[1])
+	r.CHAT.enqueueSend("ok i will give you the fish")
+	check("reply via google goes out in their language", last(r.sent) == "Ok, eu vou dar o peixe.", last(r.sent))
+	check("reply never touched openrouter", googleCalls(r) == #r.calls, #r.calls)
+	check("reply learned the language", r.LANG.playerLang[77] == "pt", r.LANG.playerLang[77])
+
+	------------------------------------------------------------------
+	-- google limited: openrouter takes over, and google is not retried
+	------------------------------------------------------------------
+	local g = newHarness({ google = true, googleStatus = 429 })
+	g.CHAT.setSpeakLang("es")
+	g.CHAT.enqueueSend("hello friend")
+	check("429 still sends through the fallback", last(g.sent) == "Hola amigo", last(g.sent))
+	check("the fallback is openrouter",
+		string.find(tostring(last(g.calls).Url), "openrouter.ai", 1, true) ~= nil)
+	check("google was rested", g.GOOGLE.available() == false)
+
+	local afterRest = #g.calls
+	g.CHAT.enqueueSend("another hello")
+	check("next send skips google entirely", googleCalls(g) == 1, googleCalls(g))
+	check("next send is one request", #g.calls - afterRest == 1, #g.calls - afterRest)
+	check("next send went to openrouter",
+		string.find(tostring(last(g.calls).Url), "openrouter.ai", 1, true) ~= nil)
+
+	-- it can be switched off outright
+	local off = newHarness({ google = true, respond = function(req)
+		local url = tostring(req.Url)
+		if string.find(url, "translate.googleapis.com", 1, true) then
+			return { StatusCode = 200, Body = '[[["Hola amigo",null,null,null,1]],null,"en"]' }
+		end
+		return { StatusCode = 200, Body = "Hola amigo" }
+	end })
+	off.GOOGLE.rest(1000000000, "rested")
+	off.CHAT.setSpeakLang("es")
+	off.CHAT.enqueueSend("hello there")
+	check("a rested google is not called at all", googleCalls(off) == 0, googleCalls(off))
+	check("rested google still sends via openrouter", last(off.sent) == "Hola amigo", last(off.sent))
 end
 
 print("")

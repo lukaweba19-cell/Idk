@@ -3230,7 +3230,109 @@ function LANG.remember(userId, lang)
 end
 
 -- 1 request: language of a message plus its English translation, in one answer.
+-- ------------------------------------------------------------------
+-- Google Translate (free gtx endpoint) - always tried first
+-- ------------------------------------------------------------------
+-- Free, needs no key and normally answers in one fast call, so OpenRouter is
+-- only the fallback for when this fails or gets limited. After a limit the
+-- whole panel stops calling it for a while: retrying a limited endpoint just
+-- makes translation slower. Set getgenv().GOOGLE_TRANSLATE = false to skip it
+-- entirely.
+local GOOGLE = {
+	cooldown = 900, -- 15 minutes off after a 429/403
+	restUntil = 0,
+	lastError = nil,
+}
+
+local function urlEncode(value)
+	return (tostring(value):gsub("[^%w%-%.%_%~]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end))
+end
+
+function GOOGLE.enabled()
+	local genv = nil
+	pcall(function()
+		if type(getgenv) == "function" then genv = getgenv() end
+	end)
+	if type(genv) == "table" and genv.GOOGLE_TRANSLATE == false then return false end
+	return true
+end
+
+function GOOGLE.available()
+	return GOOGLE.enabled() and os.clock() >= (GOOGLE.restUntil or 0)
+end
+
+function GOOGLE.rest(seconds, err)
+	GOOGLE.restUntil = os.clock() + (seconds or GOOGLE.cooldown)
+	GOOGLE.lastError = err
+end
+
+-- returns translated, detectedLanguage, err
+function GOOGLE.translate(text, target)
+	if not GOOGLE.available() then return nil, nil, "google translate is resting" end
+	target = target or "en"
+	local res = httpRequest({
+		Url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
+			.. urlEncode(target) .. "&dt=t&q=" .. urlEncode(text),
+		Method = "GET",
+		Headers = { ["User-Agent"] = "Mozilla/5.0" },
+	})
+	if not res then
+		GOOGLE.rest(120, "no response from Google Translate")
+		return nil, nil, "no response from Google Translate"
+	end
+	local status = res.StatusCode or res.Status or 200
+	local raw = res.Body or ""
+	if status == 429 or status == 403 then
+		GOOGLE.rest(GOOGLE.cooldown, "Google Translate limit reached")
+		CHAT.notify(utf8.char(9888) .. " Google Translate limit reached - OpenRouter takes over")
+		return nil, nil, "google translate limit reached"
+	end
+	if status < 200 or status >= 300 then
+		GOOGLE.rest(120, "Google Translate HTTP " .. tostring(status))
+		return nil, nil, "google translate HTTP " .. tostring(status)
+	end
+	local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+	local pieces = ok and data and data[1]
+	if type(pieces) ~= "table" then
+		GOOGLE.rest(120, "Google Translate sent an unreadable answer")
+		return nil, nil, "google translate sent an unreadable answer"
+	end
+	local parts = {}
+	for _, piece in ipairs(pieces) do
+		if type(piece) == "table" and type(piece[1]) == "string" then
+			parts[#parts + 1] = piece[1]
+		end
+	end
+	local out = trim(table.concat(parts))
+	if out == "" then
+		GOOGLE.rest(120, "Google Translate sent nothing")
+		return nil, nil, "google translate sent nothing"
+	end
+	-- the detected source language sits in the head of the reply, but the
+	-- element before it is null, so scan a few slots for the code
+	local detected = nil
+	for i = 2, 5 do
+		local value = data[i]
+		if type(value) == "string" and string.match(value, "^[%a][%a%-%w]*$") then
+			detected = LANG.canonical(value)
+			break
+		end
+	end
+	return out, detected, nil
+end
+
 function API.detectAndTranslate(text, hint)
+	-- Google first: detects the language and translates in one free call
+	if GOOGLE.available() then
+		local out, detected = GOOGLE.translate(text, "en")
+		if out and out ~= "" then
+			local lang = detected or hint or "en"
+			if not LANG.names[lang] then lang = LANG.canonical(lang) end
+			return lang, out, nil
+		end
+	end
 	local system = [[You are a precise language identifier and translator.
 Read the user's message and reply in EXACTLY this format, nothing else:
 LANG: <ISO 639-1 code of the message's own language>
@@ -3264,6 +3366,11 @@ end
 
 -- 1 request: translate into a known language.
 function API.translate(text, langCode)
+	-- Google first: free and one call
+	if GOOGLE.available() then
+		local out = GOOGLE.translate(text, langCode)
+		if out and out ~= "" then return out, nil end
+	end
 	local name = LANG.displayName(langCode)
 	local system = "Translate the user's message into " .. name .. " (" .. langCode .. "). "
 		.. "Reply with ONLY the translated sentence: no quotes, no notes, no language tags. "
@@ -3276,6 +3383,26 @@ end
 -- 1 request: translate a reply into the language of the message it answers.
 -- Doing both in one call is what keeps a reply at exactly one request.
 function API.translateLike(text, original)
+	-- Google first: work out the language being answered (0 or 1 free call),
+	-- then translate the answer into it (1 more). OpenRouter only if that fails.
+	if GOOGLE.available() then
+		local target = nil
+		local cached = LANG.detectCache[original]
+		if cached and cached.lang then target = cached.lang end
+		if not target then
+			local _, detected = GOOGLE.translate(original, "en")
+			if detected then
+				target = detected
+				LANG.detectCache[original] = LANG.detectCache[original]
+					or { lang = detected, translation = nil }
+			end
+		end
+		if target then
+			if target == "en" then return text, "en", nil end
+			local out = GOOGLE.translate(text, target)
+			if out and out ~= "" then return out, target, nil end
+		end
+	end
 	local system = [[You are a translator inside a game chat.
 The user is answering a message written in another language. Translate the
 user's answer into that same language. Keep slang, tone and names.
