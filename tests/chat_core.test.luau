@@ -61,6 +61,7 @@ local function newHarness(opts)
 
 	local function fakeRequest(req)
 		h.calls[#h.calls + 1] = req
+		if opts.respond then return opts.respond(req) end
 		local body = tostring(req.Body)
 		if string.find(body, "Message being answered", 1, true) then
 			return { StatusCode = 200, Body = "LANG: pt\nTRANSLATION: Ok, eu vou dar o peixe." }
@@ -125,6 +126,17 @@ local function newHarness(opts)
 			if id == 1 then return localPlayer end
 			return { UserId = id, DisplayName = "God", Name = "God" }
 		end,
+		GetFriendsAsync = function(_, _userId)
+			local page = {}
+			for i, id in ipairs(opts.friends or {}) do
+				page[i] = { Id = id, Username = "Friend" .. tostring(id) }
+			end
+			return {
+				GetCurrentPage = function() return page end,
+				AdvanceToNextPageAsync = function() end,
+				IsFinished = true,
+			}
+		end,
 	}
 
 	local osStub = { clock = function() return h.clock end, time = os.time }
@@ -163,21 +175,25 @@ local function newHarness(opts)
 		ipairs = ipairs,
 		next = next,
 		print = print,
-		getgenv = function() return {} end,
+		getgenv = function() return opts.genv or {} end,
 		OPENROUTER_KEY = "test-key",
 		OPENROUTER_MODEL = "openrouter/free",
 	}
 
 	local chunk = luau.load(core, { environment = env, debug_name = "re.lua chat core" })
 	local loaded = chunk()
-	h.CHAT, h.LANG = loaded.CHAT, loaded.LANG
+	h.CHAT, h.LANG, h.API = loaded.CHAT, loaded.LANG, loaded.API
 	h.CHAT.startListening() -- what the script does once its panel is built
 	return h
 end
 
-local function receive(h, userId, text)
+local function receive(h, userId, text, channelName)
 	for _, fn in ipairs(h.modern) do
-		fn({ Text = text, TextSource = { UserId = userId } })
+		fn({
+			Text = text,
+			TextSource = { UserId = userId },
+			TextChannel = channelName and { Name = channelName } or nil,
+		})
 	end
 end
 
@@ -449,6 +465,77 @@ do
 	check("reply to a detected language = 1 request", #h.calls - before == 1, #h.calls - before)
 	check("that request translates into Portuguese",
 		string.find(tostring(last(h.calls).Body), "Portuguese", 1, true) ~= nil)
+end
+
+----------------------------------------------------------------------
+-- 9. channel + friend tabs: what the panel shows, 0 requests
+----------------------------------------------------------------------
+do
+	local h = newHarness({ friends = { 77 } })
+	local C = h.CHAT
+	check("friend list loads at startup", C.friendsLoaded == true and C.friendIds[77] == true)
+
+	receive(h, 77, "eae mano", "RBXGeneral")
+	receive(h, 88, "hi there", "RBXGeneral")
+	receive(h, 88, "team only line", "RBXTeam")
+	check("channel is recorded", C.messages[3].channel == "RBXTeam", C.messages[3].channel)
+	check("general default channel", C.messages[2].channel == "RBXGeneral", C.messages[2].channel)
+	check("friend message is flagged", C.messages[1].friend == true)
+	check("stranger message is not flagged", C.messages[2].friend == nil)
+
+	C.setTab("friends")
+	check("friends tab: friend row shown", C.isVisible(C.messages[1]) == true)
+	check("friends tab: stranger row hidden", C.isVisible(C.messages[2]) == false)
+	check("friends tab: other channel hidden", C.isVisible(C.messages[3]) == false)
+
+	C.setTab("global")
+	check("global tab: general shown", C.isVisible(C.messages[1]) == true)
+	check("global tab: team row hidden", C.isVisible(C.messages[3]) == false)
+
+	C.setTab("all")
+	check("all tab: everything shown", C.isVisible(C.messages[1]) and C.isVisible(C.messages[2])
+		and C.isVisible(C.messages[3]))
+
+	-- my own lines stay visible while reading the friends tab
+	C.setTab("friends")
+	C.enqueueSend("my own line")
+	check("friends tab keeps my own line", C.isVisible(last(C.messages)) == true)
+	check("tabs cost no requests", #h.calls == 0, #h.calls)
+end
+
+----------------------------------------------------------------------
+-- 10. up to 5 keys, automatic failover on 429
+----------------------------------------------------------------------
+do
+	local h = newHarness({
+		genv = { OPENROUTER_KEYS = { "key-a", "key-b" } },
+		respond = function(req)
+			local auth = tostring(req.Headers["Authorization"])
+			if auth == "Bearer key-a" then
+				return { StatusCode = 429, Body = '{"error":"rate limit"}', Headers = { ["retry-after"] = "30" } }
+			end
+			return { StatusCode = 200, Body = "Hola amigo" }
+		end,
+	})
+	local keys = h.API.keys()
+	check("both keys are known", keys[1] == "key-a" and keys[2] == "key-b", keys[1] .. "," .. keys[2])
+
+	h.CHAT.setSpeakLang("es")
+	h.CHAT.enqueueSend("hello friend")
+	check("rate limited key switches to the next one", last(h.sent) == "Hola amigo", last(h.sent))
+	check("the answer came from the second key", tostring(last(h.calls).Headers["Authorization"]) == "Bearer key-b")
+	check("the limited key was rested", h.API.cooling["key-a"] ~= nil)
+	check("two tries, not a storm", #h.calls == 2, #h.calls)
+
+	local before = #h.calls
+	h.CHAT.enqueueSend("another hello")
+	check("rested key is skipped next time", #h.calls - before == 1, #h.calls - before)
+	check("working key is used first again", tostring(last(h.calls).Headers["Authorization"]) == "Bearer key-b")
+
+	local many = newHarness({
+		genv = { OPENROUTER_KEYS = { "k1", "k2", "k3", "k4", "k5", "k6", "k7" } },
+	})
+	check("never more than 5 keys", #many.API.keys() <= 5, #many.API.keys())
 end
 
 print("")

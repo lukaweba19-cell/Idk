@@ -43,11 +43,40 @@ local tornadoConn = nil
 
 -- OpenRouter (hardcoded) — openrouter/free auto-picks best free model
 local DEFAULT_OPENROUTER_KEY = "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"
+
+-- Up to 5 keys, used in turn. When one is rate limited (429), rejected (401)
+-- or out of credits (402) it rests for a while and the next key answers the
+-- very same request, so one dead key cannot break translation.
+-- Any of these work, in this order:
+--   getgenv().OPENROUTER_KEYS = { "sk-or-v1-a", "sk-or-v1-b" }   (best)
+--   getgenv().OPENROUTER_KEY  = "sk-or-v1-a"                    (one key)
+--   openrouter_keys.txt in the executor workspace, one key per line
+--   the OPENROUTER_KEYS table right below
+local OPENROUTER_KEYS = {
+	-- "sk-or-v1-second-key",
+	-- "sk-or-v1-third-key",
+}
+
+local function readKeyFile()
+	local out = {}
+	pcall(function()
+		if not (isfile and readfile and isfile("openrouter_keys.txt")) then return end
+		for line in tostring(readfile("openrouter_keys.txt")):gmatch("[^\r\n]+") do
+			line = (line:gsub("%s+", ""))
+			if line ~= "" and not line:match("^%-%-") then out[#out + 1] = line end
+		end
+	end)
+	return out
+end
+local OPENROUTER_FILE_KEYS = readKeyFile()
+
 -- A stale key is the number one reason translation silently does nothing.
--- Override it from the executor without editing this file:
---   getgenv().OPENROUTER_KEY = "sk-or-v1-..."
-local OPENROUTER_KEY = (type(getgenv().OPENROUTER_KEY) == "string" and getgenv().OPENROUTER_KEY ~= "")
-	and getgenv().OPENROUTER_KEY or DEFAULT_OPENROUTER_KEY
+local GENV_KEY = nil
+pcall(function()
+	if type(getgenv) == "function" then GENV_KEY = getgenv().OPENROUTER_KEY end
+end)
+local OPENROUTER_KEY = (type(GENV_KEY) == "string" and GENV_KEY ~= "")
+	and GENV_KEY or DEFAULT_OPENROUTER_KEY
 local OPENROUTER_MODEL = "openrouter/free"
 
 local flyBV, flyBG, flyConn, flyMoveConn
@@ -1382,9 +1411,69 @@ eClose.TextColor3 = TEXT
 eClose.Parent = eHeader
 Instance.new("UICorner", eClose).CornerRadius = UDim.new(0, 6)
 
+-- tabs: every emote, or only the ones you starred
+local emoteTab = "all"
+local emoteTabs = {}
+local emoteTabBar = Instance.new("Frame")
+emoteTabBar.Size = UDim2.new(1, -20, 0, 20)
+emoteTabBar.Position = UDim2.fromOffset(10, 44)
+emoteTabBar.BackgroundTransparency = 1
+emoteTabBar.Parent = emotePanel
+for i, def in ipairs({ { key = "all", label = "All" }, { key = "fav", label = "⭐ Favorites" } }) do
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1 / 2, -2, 1, 0)
+	b.Position = UDim2.new((i - 1) / 2, 1, 0, 0)
+	b.BackgroundColor3 = PANEL
+	b.Text = def.label
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 11
+	b.TextColor3 = MUTED
+	b.Parent = emoteTabBar
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+	emoteTabs[def.key] = b
+end
+local function refreshEmoteTabs()
+	for key, b in pairs(emoteTabs) do
+		local on = (emoteTab == key)
+		b.BackgroundColor3 = on and PURPLE_DIM or PANEL
+		b.TextColor3 = on and TEXT or MUTED
+	end
+end
+refreshEmoteTabs()
+
+-- star favorites, kept in the executor workspace when it can write files
+local EMOTE_FAV_FILE = "solochat_emote_favorites.json"
+local EMOTE_FAV = {}
+local function emoteJson()
+	local ok, service = pcall(function() return game:GetService("HttpService") end)
+	if ok then return service end
+	return nil
+end
+local function loadEmoteFavs()
+	local data = nil
+	pcall(function()
+		if not (isfile and readfile and isfile(EMOTE_FAV_FILE)) then return end
+		local json = emoteJson()
+		if json then data = json:JSONDecode(readfile(EMOTE_FAV_FILE)) end
+	end)
+	if type(data) ~= "table" then return end
+	for _, id in ipairs(data) do EMOTE_FAV[tostring(id)] = true end
+end
+local function saveEmoteFavs()
+	pcall(function()
+		if not writefile then return end
+		local json = emoteJson()
+		if not json then return end
+		local ids = {}
+		for id in pairs(EMOTE_FAV) do ids[#ids + 1] = tonumber(id) or id end
+		writefile(EMOTE_FAV_FILE, json:JSONEncode(ids))
+	end)
+end
+loadEmoteFavs()
+
 local search = Instance.new("TextBox")
-search.Size = UDim2.new(1, -20, 0, 30)
-search.Position = UDim2.fromOffset(10, 46)
+search.Size = UDim2.new(1, -20, 0, 26)
+search.Position = UDim2.fromOffset(10, 68)
 search.BackgroundColor3 = PANEL
 search.TextColor3 = TEXT
 search.PlaceholderColor3 = MUTED
@@ -1397,8 +1486,8 @@ search.Parent = emotePanel
 Instance.new("UICorner", search).CornerRadius = UDim.new(0, 8)
 
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -16, 1, -90)
-scroll.Position = UDim2.fromOffset(8, 82)
+scroll.Size = UDim2.new(1, -16, 1, -106)
+scroll.Position = UDim2.fromOffset(8, 100)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 4
@@ -1413,22 +1502,34 @@ listLayout.Parent = scroll
 
 local function rebuildEmoteList(filter)
 	for _, c in ipairs(scroll:GetChildren()) do
-		if c:IsA("TextButton") then c:Destroy() end
+		if c:IsA("TextButton") or c:IsA("Frame") or c:IsA("TextLabel") then
+			c:Destroy()
+		end
 	end
 	filter = string.lower(filter or "")
+	local shown = 0
 	for _, em in ipairs(EMOTES) do
-		if filter == "" or string.find(string.lower(em.name), filter, 1, true) then
+		local emRef = em
+		local key = tostring(emRef.id)
+		local fav = EMOTE_FAV[key] == true
+		local nameMatch = (filter == "" or string.find(string.lower(emRef.name), filter, 1, true) ~= nil)
+		if nameMatch and (emoteTab == "all" or fav) then
+			shown = shown + 1
+			local row = Instance.new("Frame")
+			row.Size = UDim2.new(1, -4, 0, 32)
+			row.BackgroundColor3 = PANEL
+			row.Parent = scroll
+			Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
 			local b = Instance.new("TextButton")
-			b.Size = UDim2.new(1, -4, 0, 32)
-			b.BackgroundColor3 = PANEL
+			b.Size = UDim2.new(1, -34, 1, 0)
+			b.BackgroundTransparency = 1
 			b.TextColor3 = TEXT
 			b.Font = Enum.Font.Gotham
 			b.TextSize = 12
 			b.TextXAlignment = Enum.TextXAlignment.Left
-			b.Text = (em.kind == "r6" and "  [R6] " or "  ") .. em.name
-			b.Parent = scroll
-			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-			local emRef = em
+			b.Text = (emRef.kind == "r6" and "  [R6] " or "  ") .. emRef.name
+			b.Parent = row
 			b.MouseButton1Click:Connect(function()
 				local isR6 = (emRef.kind == "r6")
 				playEmote(emRef.id, {
@@ -1438,7 +1539,40 @@ local function rebuildEmoteList(filter)
 					priority = isR6 and Enum.AnimationPriority.Idle or Enum.AnimationPriority.Action4,
 				})
 			end)
+
+			local star = Instance.new("TextButton")
+			star.Size = UDim2.fromOffset(30, 32)
+			star.Position = UDim2.new(1, -32, 0, 0)
+			star.BackgroundColor3 = fav and PURPLE_DIM or BG
+			star.Text = "⭐"
+			star.TextSize = 13
+			star.Font = Enum.Font.GothamBold
+			star.TextColor3 = TEXT
+			star.Parent = row
+			Instance.new("UICorner", star).CornerRadius = UDim.new(0, 6)
+			star.MouseButton1Click:Connect(function()
+				if EMOTE_FAV[key] then
+					EMOTE_FAV[key] = nil
+				else
+					EMOTE_FAV[key] = true
+				end
+				saveEmoteFavs()
+				rebuildEmoteList(search.Text)
+			end)
 		end
+	end
+	if shown == 0 then
+		local hint = Instance.new("TextLabel")
+		hint.Size = UDim2.new(1, -8, 0, 44)
+		hint.BackgroundTransparency = 1
+		hint.Font = Enum.Font.Gotham
+		hint.TextSize = 12
+		hint.TextColor3 = MUTED
+		hint.TextWrapped = true
+		hint.Text = (emoteTab == "fav")
+			and "No favorite emotes yet - tap ⭐ on any emote to save it here."
+			or "Nothing matches that search."
+		hint.Parent = scroll
 	end
 	task.defer(function()
 		scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 8)
@@ -1456,6 +1590,13 @@ emoteHeaderText()
 search:GetPropertyChangedSignal("Text"):Connect(function()
 	rebuildEmoteList(search.Text)
 end)
+for key, b in pairs(emoteTabs) do
+	b.MouseButton1Click:Connect(function()
+		emoteTab = key
+		refreshEmoteTabs()
+		rebuildEmoteList(search.Text)
+	end)
+end
 
 local function setEmotesOpen(state)
 	emotesOpen = state
@@ -2341,6 +2482,10 @@ local CHAT = {
 	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
 	pendingEcho = {}, -- signature -> local row waiting for its own echo
 	seen = {}, -- signature -> clock, kills duplicate listeners
+	tab = "all", -- "all" | "global" | "friends"
+	friendIds = {}, -- [userId] = true, filled by CHAT.refreshFriends
+	friendsLoaded = false,
+	friendsAt = 0,
 	notify = function() end,
 	onNew = function() end,
 	onUpdate = function() end,
@@ -2357,9 +2502,13 @@ end
 local API = {
 	lastError = nil,
 	warned = {},
+	maxKeys = 5, -- hard cap on keys in rotation
+	maxAttempts = 8, -- hard cap on HTTP tries inside one logical call
 	-- openrouter/free auto-picks a model; the rest are only tried when the
 	-- previous call actually failed, so a working call is always one request.
 	models = { OPENROUTER_MODEL, "google/gemma-4-26b-a4b-it:free", "liquid/lfm-2.5-2.6b:free" },
+	cooling = {}, -- key -> { readyAt = clock, status = http status }
+	lastGoodKey = nil,
 }
 
 local function httpRequest(opts)
@@ -2377,10 +2526,10 @@ end
 
 function API.errorFor(status, body)
 	if status == 401 then
-		return "OpenRouter key rejected (401) - set getgenv().OPENROUTER_KEY to a valid key"
+		return "OpenRouter key rejected (401) - fix it with getgenv().OPENROUTER_KEYS"
 	end
-	if status == 402 then return "OpenRouter out of credits (402)" end
-	if status == 429 then return "OpenRouter rate limited (429) - try again in a moment" end
+	if status == 402 then return "that OpenRouter key is out of credits (402)" end
+	if status == 429 then return "every OpenRouter key is rate limited (429)" end
 	if status == 404 then return "OpenRouter: no provider for that model (404)" end
 	local msg = body and tostring(body):match('"message"%s*:%s*"([^"]+)"')
 	return "OpenRouter HTTP " .. tostring(status) .. (msg and (": " .. msg) or "")
@@ -2394,50 +2543,156 @@ function API.report(text)
 	CHAT.notify(utf8.char(9888) .. " " .. text)
 end
 
--- one logical call; a second HTTP request only happens when the first model
--- failed (dead model / provider outage), never after a good answer
-local function callOpenRouter(systemPrompt, userPrompt)
-	local lastErr = "unknown error"
-	for _, model in ipairs(API.models) do
-		local body = HttpService:JSONEncode({
-			model = model,
-			messages = {
-				{ role = "system", content = systemPrompt },
-				{ role = "user", content = userPrompt },
-			},
-			temperature = 0.2,
-			max_tokens = 500,
-		})
-		local res = httpRequest({
-			Url = "https://openrouter.ai/api/v1/chat/completions",
-			Method = "POST",
-			Headers = {
-				["Authorization"] = "Bearer " .. OPENROUTER_KEY,
-				["Content-Type"] = "application/json",
-				["HTTP-Referer"] = "https://roblox.com",
-				["X-Title"] = "SoloChatTranslator",
-			},
-			Body = body,
-		})
-		if not res then
-			lastErr = "no HTTP response from OpenRouter"
+-- ------------------------------------------------------------------
+-- Keys: up to 5, tried in order, only a failure moves to the next one
+-- ------------------------------------------------------------------
+-- Rebuilt on every call, so a key added at runtime is picked up immediately.
+function API.keys()
+	local list, seen = {}, {}
+	local function add(k)
+		if type(k) ~= "string" then return end
+		k = (k:gsub("%s+", ""))
+		if k == "" or seen[k] or #list >= API.maxKeys then return end
+		seen[k] = true
+		list[#list + 1] = k
+	end
+	local genv = nil
+	pcall(function()
+		if type(getgenv) == "function" then genv = getgenv() end
+	end)
+	if type(genv) == "table" then
+		if type(genv.OPENROUTER_KEYS) == "table" then
+			for _, k in ipairs(genv.OPENROUTER_KEYS) do add(k) end
+		end
+		add(genv.OPENROUTER_KEY)
+	end
+	if type(OPENROUTER_KEYS) == "table" then
+		for _, k in ipairs(OPENROUTER_KEYS) do add(k) end
+	end
+	if type(OPENROUTER_FILE_KEYS) == "table" then
+		for _, k in ipairs(OPENROUTER_FILE_KEYS) do add(k) end
+	end
+	add(OPENROUTER_KEY)
+	if #list == 0 and type(DEFAULT_OPENROUTER_KEY) == "string" then
+		add(DEFAULT_OPENROUTER_KEY)
+	end
+	return list
+end
+
+-- ready keys first (the one that worked last time on top), rested keys last
+-- and soonest-ready first, so an all-limited set still gets tried
+function API.orderedKeys()
+	local now = os.clock()
+	local ready, resting = {}, {}
+	for _, k in ipairs(API.keys()) do
+		local cd = API.cooling[k]
+		if cd and cd.readyAt > now then
+			resting[#resting + 1] = { key = k, at = cd.readyAt }
 		else
-			local status = res.StatusCode or res.Status or 200
-			local raw = res.Body or ""
-			if status >= 200 and status < 300 then
-				local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
-				local content = ok and data and data.choices and data.choices[1]
-					and data.choices[1].message and data.choices[1].message.content
-				if type(content) == "string" and content ~= "" then
-					return trim(content)
-				end
-				lastErr = "empty completion from " .. model
-			else
-				lastErr = API.errorFor(status, raw)
-				-- a bad key or an empty wallet will not improve on another model
-				if status == 401 or status == 402 then break end
+			API.cooling[k] = nil
+			ready[#ready + 1] = k
+		end
+	end
+	table.sort(resting, function(a, b) return a.at < b.at end)
+	local out = {}
+	for _, k in ipairs(ready) do out[#out + 1] = k end
+	for _, entry in ipairs(resting) do out[#out + 1] = entry.key end
+	if API.lastGoodKey then
+		for i, k in ipairs(out) do
+			if k == API.lastGoodKey and i > 1 then
+				table.remove(out, i)
+				table.insert(out, 1, k)
+				break
 			end
 		end
+	end
+	return out
+end
+
+function API.keyLabel(key)
+	for i, k in ipairs(API.keys()) do
+		if k == key then return "Key " .. i end
+	end
+	return "That key"
+end
+
+-- 429 = slow down, 401/402 = this key is dead. Either way: rest it, next key.
+function API.restKey(key, status, res)
+	local wait = (status == 429) and 25 or 300
+	if status == 429 then
+		local headers = res and res.Headers
+		local after = headers and (headers["retry-after"] or headers["Retry-After"])
+		local secs = tonumber(after)
+		if secs and secs > 0 and secs <= 120 then wait = secs end
+	end
+	API.cooling[key] = { readyAt = os.clock() + wait, status = status }
+end
+
+-- one logical call; extra HTTP requests only happen after a real failure
+-- (a rested key, a dead model), never after a good answer
+local function callOpenRouter(systemPrompt, userPrompt)
+	local lastErr = "unknown error"
+	local keys = API.orderedKeys()
+	if #keys == 0 then return nil, "no OpenRouter key is set" end
+	local budget = math.min(#keys + 2, API.maxAttempts)
+	for _, model in ipairs(API.models) do
+		local modelProblem = false
+		for _, key in ipairs(keys) do
+			if budget <= 0 then break end
+			budget = budget - 1
+			local body = HttpService:JSONEncode({
+				model = model,
+				messages = {
+					{ role = "system", content = systemPrompt },
+					{ role = "user", content = userPrompt },
+				},
+				temperature = 0.2,
+				max_tokens = 500,
+			})
+			local res = httpRequest({
+				Url = "https://openrouter.ai/api/v1/chat/completions",
+				Method = "POST",
+				Headers = {
+					["Authorization"] = "Bearer " .. key,
+					["Content-Type"] = "application/json",
+					["HTTP-Referer"] = "https://roblox.com",
+					["X-Title"] = "SoloChatTranslator",
+				},
+				Body = body,
+			})
+			if not res then
+				lastErr = "no HTTP response from OpenRouter"
+				modelProblem = true
+			else
+				local status = res.StatusCode or res.Status or 200
+				local raw = res.Body or ""
+				if status >= 200 and status < 300 then
+					local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+					local content = ok and data and data.choices and data.choices[1]
+						and data.choices[1].message and data.choices[1].message.content
+					if type(content) == "string" and content ~= "" then
+						API.lastGoodKey = key
+						API.cooling[key] = nil
+						return trim(content)
+					end
+					lastErr = "empty completion from " .. model
+					modelProblem = true
+				elseif status == 401 or status == 402 or status == 429 then
+					API.restKey(key, status, res)
+					lastErr = API.errorFor(status, raw)
+					if status == 429 then
+						CHAT.notify(utf8.char(9888) .. " " .. API.keyLabel(key)
+							.. " is rate limited - switching to the next key")
+					end
+				else
+					lastErr = API.errorFor(status, raw)
+					modelProblem = true
+					break
+				end
+			end
+		end
+		-- every key was rested: another model would just be limited as well
+		if not modelProblem then break end
 	end
 	return nil, lastErr
 end
@@ -3099,7 +3354,7 @@ local function prune()
 end
 
 -- 0 requests. Adds a chat line; only tags it with the free local guess.
-function CHAT.pushMessage(playerName, userId, text)
+function CHAT.pushMessage(playerName, userId, text, channel)
 	if type(text) ~= "string" then return nil end
 	text = trim(text)
 	if text == "" then return nil end
@@ -3143,6 +3398,8 @@ function CHAT.pushMessage(playerName, userId, text)
 		state = "original",
 		mine = mine,
 		sent = mine or nil,
+		channel = channel or "RBXGeneral",
+		friend = (not mine and CHAT.friendIds[userId or 0]) and true or nil,
 	}
 
 	-- free tagging only: nothing here talks to OpenRouter
@@ -3160,6 +3417,86 @@ function CHAT.pushMessage(playerName, userId, text)
 	prune()
 	CHAT.onNew(msg)
 	return msg
+end
+
+-- 0 requests: which rows belong to the tab that is open.
+function CHAT.isVisible(msg)
+	if not msg then return false end
+	local tab = CHAT.tab or "all"
+	if tab == "friends" then
+		return msg.mine == true or msg.friend == true
+	end
+	if tab == "global" then
+		-- anything that is not a team or whisper channel counts as global,
+		-- so games that rename their general channel still work
+		local name = string.lower(tostring(msg.channel or "RBXGeneral"))
+		return not (string.find(name, "team", 1, true) or string.find(name, "whisper", 1, true))
+	end
+	return true
+end
+
+-- 0 requests: switching tabs only shows or hides rows that already exist.
+function CHAT.setTab(tab)
+	if tab ~= "global" and tab ~= "friends" then tab = "all" end
+	CHAT.tab = tab
+	CHAT.onState()
+end
+
+-- 0 requests: the friend list comes from the players service, not OpenRouter.
+-- Cached for two minutes; every row is re-tagged when it lands.
+function CHAT.refreshFriends(force)
+	if CHAT.friendsBusy then return end
+	if not force and CHAT.friendsLoaded and (os.clock() - (CHAT.friendsAt or 0)) < 120 then
+		return
+	end
+	CHAT.friendsBusy = true
+	task.spawn(function()
+		local ids = {}
+		local fetched = false
+		pcall(function()
+			local pages = Players:GetFriendsAsync(player.UserId)
+			if not pages then return end
+			while true do
+				local items = pages:GetCurrentPage()
+				for _, item in ipairs(items or {}) do
+					local id = item.Id or item.UserId
+					if id then ids[id] = true end
+				end
+				fetched = true
+				if pages.IsFinished then break end
+				pages:AdvanceToNextPageAsync()
+			end
+		end)
+		CHAT.friendsBusy = false
+		if not fetched then
+			-- the friends endpoint can be blocked: ask about the people who are
+			-- actually talking here instead, at most 30 of them
+			local checked = 0
+			for _, msg in ipairs(CHAT.messages) do
+				if checked >= 30 then break end
+				local uid = msg.userId
+				if not msg.mine and uid and uid ~= player.UserId and ids[uid] == nil then
+					checked = checked + 1
+					local ok, isFriend = pcall(function()
+						return player:IsFriendsWithAsync(uid)
+					end)
+					if ok and isFriend == true then ids[uid] = true end
+				end
+			end
+			for _, msg in ipairs(CHAT.messages) do
+				msg.friend = (not msg.mine and ids[msg.userId]) and true or nil
+			end
+			pcall(function() CHAT.onState() end)
+			return
+		end
+		CHAT.friendIds = ids
+		CHAT.friendsLoaded = true
+		CHAT.friendsAt = os.clock()
+		for _, msg in ipairs(CHAT.messages) do
+			msg.friend = (not msg.mine and ids[msg.userId]) and true or nil
+		end
+		CHAT.onState()
+	end)
 end
 
 -- 0 requests: remembers which message you are answering.
@@ -3228,7 +3565,7 @@ function CHAT.buildOutgoing(text, target, inferFrom)
 end
 
 -- 0 requests: puts our line in the panel and sends it exactly once.
-function CHAT.dispatch(toSend, lang)
+function CHAT.dispatch(toSend, lang, channelName)
 	toSend = trim(toSend)
 	if toSend == "" then return false end
 
@@ -3246,6 +3583,8 @@ function CHAT.dispatch(toSend, lang)
 		state = "original",
 		mine = true,
 		sent = false,
+		channel = channelName or "RBXGeneral",
+		friend = false,
 	}
 	-- registered before SendAsync yields, so the echo the server sends back
 	-- finds this row instead of adding a second copy of it
@@ -3257,7 +3596,17 @@ function CHAT.dispatch(toSend, lang)
 
 	local sent = false
 	pcall(function()
-		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		local channels = TextChatService.TextChannels
+		local channel = (channelName and channels:FindFirstChild(channelName))
+			or channels:FindFirstChild("RBXGeneral")
+		if not channel then
+			for _, child in ipairs(channels:GetChildren()) do
+				if child:IsA("TextChannel") then
+					channel = child
+					break
+				end
+			end
+		end
 		if channel then
 			channel:SendAsync(toSend)
 			sent = true
@@ -3305,7 +3654,7 @@ function CHAT.enqueueSend(text)
 				CHAT.notify(utf8.char(9888) .. " Could not translate to "
 					.. LANG.displayName(usedLang) .. ": " .. tostring(terr))
 			end
-			if not CHAT.dispatch(toSend, usedLang) then
+			if not CHAT.dispatch(toSend, usedLang, reply and reply.channel) then
 				CHAT.notify(utf8.char(9888) .. " Message was not sent")
 			end
 			if reply and usedLang and usedLang ~= "en" then
@@ -3379,9 +3728,16 @@ function CHAT.startListening()
 			local src = textChatMessage.TextSource
 			local plr = Players:GetPlayerByUserId(src.UserId)
 			local name = plr and (plr.DisplayName or plr.Name) or ("User" .. tostring(src.UserId))
-			CHAT.pushMessage(name, src.UserId, textChatMessage.Text)
+			local channelName = nil
+			pcall(function()
+				local textChannel = textChatMessage.TextChannel
+				if textChannel then channelName = textChannel.Name end
+			end)
+			CHAT.pushMessage(name, src.UserId, textChatMessage.Text, channelName)
 		end)
 	end)
+
+	CHAT.refreshFriends()
 
 	local modern = true
 	pcall(function()
@@ -3396,7 +3752,7 @@ function CHAT.startListening()
 		if not msgDone then return end
 		msgDone.OnClientEvent:Connect(function(data)
 			if type(data) ~= "table" or not data.Message or not data.FromSpeaker then return end
-			CHAT.pushMessage(data.FromSpeaker, tonumber(data.SpeakerUserId) or 0, data.Message)
+			CHAT.pushMessage(data.FromSpeaker, tonumber(data.SpeakerUserId) or 0, data.Message, "RBXGeneral")
 		end)
 	end)
 end
@@ -3450,10 +3806,48 @@ local function buildChatPanel()
 	cClose.Parent = cHeader
 	Instance.new("UICorner", cClose).CornerRadius = UDim.new(0, 6)
 
+	-- tabs: which conversation the list shows --------------------------------
+	local tabDefs = {
+		{ key = "all", label = "All" },
+		{ key = "global", label = "Global" },
+		{ key = "friends", label = "Friends" },
+	}
+	local tabBar = Instance.new("Frame")
+	tabBar.Size = UDim2.new(1, -16, 0, 20)
+	tabBar.Position = UDim2.fromOffset(8, 42)
+	tabBar.BackgroundTransparency = 1
+	tabBar.Parent = chatPanel
+	local tabBtns = {}
+	for i, def in ipairs(tabDefs) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(1 / 3, -2, 1, 0)
+		b.Position = UDim2.new((i - 1) / 3, 1, 0, 0)
+		b.BackgroundColor3 = PANEL
+		b.Text = def.label
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 11
+		b.TextColor3 = MUTED
+		b.Parent = tabBar
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+		tabBtns[def.key] = b
+		b.MouseButton1Click:Connect(function()
+			CHAT.setTab(def.key)
+			if def.key == "friends" then CHAT.refreshFriends() end
+		end)
+	end
+	local function refreshTabBtns()
+		for _, def in ipairs(tabDefs) do
+			local b = tabBtns[def.key]
+			local on = (CHAT.tab or "all") == def.key
+			b.BackgroundColor3 = on and PURPLE_DIM or PANEL
+			b.TextColor3 = on and TEXT or MUTED
+		end
+	end
+
 	-- language selector bar -------------------------------------------------
 	local langBar = Instance.new("Frame")
-	langBar.Size = UDim2.new(1, -16, 0, 28)
-	langBar.Position = UDim2.fromOffset(8, 46)
+	langBar.Size = UDim2.new(1, -16, 0, 26)
+	langBar.Position = UDim2.fromOffset(8, 66)
 	langBar.BackgroundColor3 = PANEL
 	langBar.Parent = chatPanel
 	Instance.new("UICorner", langBar).CornerRadius = UDim.new(0, 7)
@@ -3477,7 +3871,7 @@ local function buildChatPanel()
 	langClear.Size = UDim2.fromOffset(28, 22)
 	langClear.Position = UDim2.new(1, -30, 0.5, -11)
 	langClear.BackgroundColor3 = RED
-	langClear.Text = "✕"
+	langClear.Text = "✖️"
 	langClear.TextSize = 11
 	langClear.Font = Enum.Font.GothamBold
 	langClear.TextColor3 = TEXT
@@ -3486,8 +3880,8 @@ local function buildChatPanel()
 	Instance.new("UICorner", langClear).CornerRadius = UDim.new(0, 5)
 
 	local langMenu = Instance.new("Frame")
-	langMenu.Size = UDim2.new(1, -16, 1, -146)
-	langMenu.Position = UDim2.fromOffset(8, 78)
+	langMenu.Size = UDim2.new(1, -16, 1, -162)
+	langMenu.Position = UDim2.fromOffset(8, 96)
 	langMenu.BackgroundColor3 = PANEL
 	langMenu.BorderSizePixel = 0
 	langMenu.Visible = false
@@ -3496,9 +3890,24 @@ local function buildChatPanel()
 	Instance.new("UICorner", langMenu).CornerRadius = UDim.new(0, 8)
 	Instance.new("UIStroke", langMenu).Color = PURPLE
 
+	local langSearch = Instance.new("TextBox")
+	langSearch.Size = UDim2.new(1, -8, 0, 24)
+	langSearch.Position = UDim2.fromOffset(4, 4)
+	langSearch.BackgroundColor3 = BG
+	langSearch.TextColor3 = TEXT
+	langSearch.PlaceholderColor3 = MUTED
+	langSearch.PlaceholderText = "Search languages (name or code)"
+	langSearch.Font = Enum.Font.Gotham
+	langSearch.TextSize = 12
+	langSearch.Text = ""
+	langSearch.ClearTextOnFocus = false
+	langSearch.ZIndex = 22
+	langSearch.Parent = langMenu
+	Instance.new("UICorner", langSearch).CornerRadius = UDim.new(0, 6)
+
 	local langScroll = Instance.new("ScrollingFrame")
-	langScroll.Size = UDim2.new(1, -8, 1, -8)
-	langScroll.Position = UDim2.fromOffset(4, 4)
+	langScroll.Size = UDim2.new(1, -8, 1, -32)
+	langScroll.Position = UDim2.fromOffset(4, 32)
 	langScroll.BackgroundTransparency = 1
 	langScroll.BorderSizePixel = 0
 	langScroll.ScrollBarThickness = 4
@@ -3517,8 +3926,8 @@ local function buildChatPanel()
 
 	-- messages -------------------------------------------------------------
 	local chatScroll = Instance.new("ScrollingFrame")
-	chatScroll.Size = UDim2.new(1, -16, 1, -146)
-	chatScroll.Position = UDim2.fromOffset(8, 78)
+	chatScroll.Size = UDim2.new(1, -16, 1, -162)
+	chatScroll.Position = UDim2.fromOffset(8, 96)
 	chatScroll.BackgroundTransparency = 1
 	chatScroll.BorderSizePixel = 0
 	chatScroll.ScrollBarThickness = 4
@@ -3642,17 +4051,21 @@ local function buildChatPanel()
 	local function paintRow(msg)
 		if msg._nameLbl then
 			local tag = msg.lang or msg.langHint
-			local suffix = ""
+			local bits = {}
 			if msg.mine then
 				if msg.sent == true then
-					suffix = "  (sent)"
+					bits[#bits + 1] = "(sent)"
 				elseif msg.sent == false then
-					suffix = "  (sending…)"
+					bits[#bits + 1] = "(sending…)"
 				end
 			elseif tag and tag ~= "en" then
-				suffix = "  [" .. LANG.displayName(tag) .. "]"
+				bits[#bits + 1] = "[" .. LANG.displayName(tag) .. "]"
 			end
-			msg._nameLbl.Text = msg.playerName .. suffix
+			if msg.channel and msg.channel ~= "" and msg.channel ~= "RBXGeneral" then
+				bits[#bits + 1] = "(" .. tostring(msg.channel) .. ")"
+			end
+			local suffix = (#bits > 0) and ("  " .. table.concat(bits, " ")) or ""
+			msg._nameLbl.Text = (msg.friend and "⭐ " or "") .. msg.playerName .. suffix
 		end
 		if msg._textLbl then
 			if msg.state == "translated" and msg.translated then
@@ -3670,7 +4083,7 @@ local function buildChatPanel()
 			if msg.busy then
 				msg._trBtn.Text = "..."
 			elseif msg.state == "translated" then
-				msg._trBtn.Text = "↺"
+				msg._trBtn.Text = "🔁"
 			else
 				msg._trBtn.Text = "🌐"
 			end
@@ -3753,15 +4166,27 @@ local function buildChatPanel()
 			replyBox:CaptureFocus()
 		end)
 
+		row.Visible = CHAT.isVisible(msg)
 		paintRow(msg)
 		return row
 	end
 
-	CHAT.onNew = addMessageRow
+	local function applyTabFilter()
+		for _, msg in ipairs(CHAT.messages) do
+			if msg._row then msg._row.Visible = CHAT.isVisible(msg) end
+		end
+	end
+
+	CHAT.onNew = function(msg)
+		addMessageRow(msg)
+		applyTabFilter()
+	end
 	CHAT.onUpdate = paintRow
 	CHAT.onState = function()
 		refreshLangBar()
 		refreshSendUi()
+		refreshTabBtns()
+		applyTabFilter()
 	end
 	CHAT.notify = function(text)
 		showToast(text, 7)
@@ -3775,6 +4200,7 @@ local function buildChatPanel()
 		end
 	end
 
+		local langRows = {}
 	local function addLangRow(text, code)
 		local b = Instance.new("TextButton")
 		b.Size = UDim2.new(1, -4, 0, 28)
@@ -3787,6 +4213,7 @@ local function buildChatPanel()
 		b.ZIndex = 22
 		b.Parent = langScroll
 		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+		langRows[#langRows + 1] = b
 		b.MouseButton1Click:Connect(function()
 			CHAT.setSpeakLang(code)
 			setLangMenu(false)
@@ -3794,9 +4221,10 @@ local function buildChatPanel()
 		return b
 	end
 
-	addLangRow("Auto - match the language of the line I reply to", "auto")
-	addLangRow("English (send as typed, no translation)", "en")
-
+	local langEntries = {
+		{ text = "Auto - match the language of the line I reply to", code = "auto" },
+		{ text = "English (send as typed, no translation)", code = "en" },
+	}
 	local langOrder = {}
 	for code, name in pairs(LANG.names) do
 		if code ~= "en" then
@@ -3807,8 +4235,40 @@ local function buildChatPanel()
 		return string.lower(a.name) < string.lower(b.name)
 	end)
 	for _, entry in ipairs(langOrder) do
-		addLangRow(entry.name, entry.code)
+		langEntries[#langEntries + 1] = { text = entry.name, code = entry.code }
 	end
+
+	local function renderLangRows(filter)
+		for _, b in ipairs(langRows) do b:Destroy() end
+		langRows = {}
+		filter = string.lower(trim(filter or ""))
+		local shown = 0
+		for _, entry in ipairs(langEntries) do
+			if filter == "" or string.find(string.lower(entry.text), filter, 1, true)
+				or string.lower(entry.code) == filter then
+				addLangRow(entry.text, entry.code)
+				shown = shown + 1
+			end
+		end
+		if shown == 0 then
+			local b = Instance.new("TextButton")
+			b.Size = UDim2.new(1, -4, 0, 28)
+			b.BackgroundColor3 = BG
+			b.TextColor3 = MUTED
+			b.Font = Enum.Font.Gotham
+			b.TextSize = 12
+			b.TextXAlignment = Enum.TextXAlignment.Left
+			b.Text = "  No language matches that"
+			b.ZIndex = 22
+			b.Parent = langScroll
+			langRows[#langRows + 1] = b
+		end
+		langScroll.CanvasSize = UDim2.new(0, 0, 0, langLayout.AbsoluteContentSize.Y + 6)
+	end
+	renderLangRows("")
+	langSearch:GetPropertyChangedSignal("Text"):Connect(function()
+		renderLangRows(langSearch.Text)
+	end)
 
 	langBtn.MouseButton1Click:Connect(function()
 		setLangMenu(not langMenu.Visible)
