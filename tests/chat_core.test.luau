@@ -509,11 +509,14 @@ do
 	local h = newHarness({ friends = { 77 } })
 	local C = h.CHAT
 	check("friend list loads at startup", C.friendsLoaded == true and C.friendIds[77] == true)
+	check("panel opens on the general tab", C.tab == "general", C.tab)
 
 	receive(h, 77, "eae mano", "RBXGeneral")
 	receive(h, 88, "hi there", "RBXGeneral")
 	receive(h, 88, "team only line", "RBXTeam")
+	receive(h, 88, "selling a sword", "Trade")
 	check("channel is recorded", C.messages[3].channel == "RBXTeam", C.messages[3].channel)
+	check("second channel is recorded", C.messages[4].channel == "Trade", C.messages[4].channel)
 	check("general default channel", C.messages[2].channel == "RBXGeneral", C.messages[2].channel)
 	check("friend message is flagged", C.messages[1].friend == true)
 	check("stranger message is not flagged", C.messages[2].friend == nil)
@@ -523,13 +526,16 @@ do
 	check("friends tab: stranger row hidden", C.isVisible(C.messages[2]) == false)
 	check("friends tab: other channel hidden", C.isVisible(C.messages[3]) == false)
 
-	C.setTab("global")
-	check("global tab: general shown", C.isVisible(C.messages[1]) == true)
-	check("global tab: team row hidden", C.isVisible(C.messages[3]) == false)
-
+	C.setTab("general")
+	check("general tab: general channel shown", C.isVisible(C.messages[1]) == true)
+	check("general tab: stranger in general shown", C.isVisible(C.messages[2]) == true)
+	check("general tab: team row hidden", C.isVisible(C.messages[3]) == false)
+	check("general tab: other channel hidden", C.isVisible(C.messages[4]) == false)
+	check("general tab: my own line shown", C.isVisible(C.messages[2]) == true)
 	C.setTab("all")
-	check("all tab: everything shown", C.isVisible(C.messages[1]) and C.isVisible(C.messages[2])
-		and C.isVisible(C.messages[3]))
+	check("there is no all tab: asking for it lands on general", C.tab == "general", C.tab)
+	C.setTab("global")
+	check("there is no global tab either", C.tab == "general", C.tab)
 
 	-- my own lines stay visible while reading the friends tab
 	C.setTab("friends")

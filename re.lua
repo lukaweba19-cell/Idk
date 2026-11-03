@@ -2482,7 +2482,7 @@ local CHAT = {
 	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
 	pendingEcho = {}, -- signature -> local row waiting for its own echo
 	seen = {}, -- signature -> clock, kills duplicate listeners
-	tab = "all", -- "all" | "global" | "friends"
+	tab = "general", -- "general" | "friends"
 	friendIds = {}, -- [userId] = true, filled by CHAT.refreshFriends
 	friendsLoaded = false,
 	friendsAt = 0,
@@ -3549,22 +3549,22 @@ end
 -- 0 requests: which rows belong to the tab that is open.
 function CHAT.isVisible(msg)
 	if not msg then return false end
-	local tab = CHAT.tab or "all"
+	local tab = CHAT.tab or "general"
 	if tab == "friends" then
 		return msg.mine == true or msg.friend == true
 	end
-	if tab == "global" then
-		-- anything that is not a team or whisper channel counts as global,
-		-- so games that rename their general channel still work
-		local name = string.lower(tostring(msg.channel or "RBXGeneral"))
-		return not (string.find(name, "team", 1, true) or string.find(name, "whisper", 1, true))
+	-- the general channel only: team, whisper, trade and any other extra
+	-- channel stays out of this tab
+	local name = string.lower(tostring(msg.channel or "RBXGeneral"))
+	if string.find(name, "team", 1, true) or string.find(name, "whisper", 1, true) then
+		return false
 	end
-	return true
+	return string.find(name, "general", 1, true) ~= nil
 end
 
 -- 0 requests: switching tabs only shows or hides rows that already exist.
 function CHAT.setTab(tab)
-	if tab ~= "global" and tab ~= "friends" then tab = "all" end
+	if tab ~= "friends" then tab = "general" end
 	CHAT.tab = tab
 	CHAT.onState()
 end
@@ -3935,8 +3935,7 @@ local function buildChatPanel()
 
 	-- tabs: which conversation the list shows --------------------------------
 	local tabDefs = {
-		{ key = "all", label = "All" },
-		{ key = "global", label = "Global" },
+		{ key = "general", label = "General" },
 		{ key = "friends", label = "Friends" },
 	}
 	local tabBar = Instance.new("Frame")
@@ -3947,8 +3946,8 @@ local function buildChatPanel()
 	local tabBtns = {}
 	for i, def in ipairs(tabDefs) do
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(1 / 3, -2, 1, 0)
-		b.Position = UDim2.new((i - 1) / 3, 1, 0, 0)
+		b.Size = UDim2.new(1 / #tabDefs, -2, 1, 0)
+		b.Position = UDim2.new((i - 1) / #tabDefs, 1, 0, 0)
 		b.BackgroundColor3 = PANEL
 		b.Text = def.label
 		b.Font = Enum.Font.GothamBold
@@ -3965,7 +3964,7 @@ local function buildChatPanel()
 	local function refreshTabBtns()
 		for _, def in ipairs(tabDefs) do
 			local b = tabBtns[def.key]
-			local on = (CHAT.tab or "all") == def.key
+			local on = (CHAT.tab or "general") == def.key
 			b.BackgroundColor3 = on and PURPLE_DIM or PANEL
 			b.TextColor3 = on and TEXT or MUTED
 		end
