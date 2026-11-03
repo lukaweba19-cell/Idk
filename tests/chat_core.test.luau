@@ -216,6 +216,24 @@ local function newHarness(opts)
 		env.writefile = function(name, data) files[name] = data end
 	end
 
+	-- settings.json stand-in: the core only talks to SETTINGS.get / SETTINGS.set,
+	-- so the same two methods are enough and they record what was saved
+	if opts.saved then
+		local saved = opts.saved
+		h.saved = saved
+		env.SETTINGS = {
+			get = function(key, default)
+				local value = saved[key]
+				if value == nil or type(value) ~= type(default) then return default end
+				return value
+			end,
+			set = function(key, value)
+				saved[key] = value
+				return value
+			end,
+		}
+	end
+
 	local chunk = luau.load(core, { environment = env, debug_name = "re.lua chat core" })
 	local loaded = chunk()
 	h.CHAT, h.LANG, h.API, h.GOOGLE = loaded.CHAT, loaded.LANG, loaded.API, loaded.GOOGLE
@@ -873,6 +891,120 @@ do
 	check("a total failure shows the google reason too",
 		string.find(shown, "Google: ", 1, true) ~= nil, shown)
 	check("a total failure still sends something", #none.sent == 1, #none.sent)
+end
+
+----------------------------------------------------------------------
+-- 16. the switches are remembered, not reset every execution
+----------------------------------------------------------------------
+do
+	local saved = { method = "google" }
+	local h = newHarness({ google = true, saved = saved })
+	check("a saved translation method is restored", h.CHAT.method == "google", h.CHAT.method)
+	h.CHAT.setMethod("openrouter")
+	check("picking a method writes it down", saved.method == "openrouter", saved.method)
+	h.CHAT.setMethod("nonsense")
+	check("a bad pick is stored as auto", saved.method == "auto", saved.method)
+
+	local edited = newHarness({ google = true, saved = { method = "banana" } })
+	check("a hand-edited method falls back to auto", edited.CHAT.method == "auto", edited.CHAT.method)
+
+	local fresh = newHarness({ google = true })
+	check("with no settings yet the method is auto", fresh.CHAT.method == "auto", fresh.CHAT.method)
+end
+
+----------------------------------------------------------------------
+-- 17. settings.json itself: written on a flip, read back on the next run
+----------------------------------------------------------------------
+do
+	local bPos = string.find(source, "--[[ SETTINGS_BEGIN ]]", 1, true)
+	local dPos = string.find(source, "--[[ SETTINGS_END ]]", 1, true)
+	check("the settings block is marked for the tests", bPos ~= nil and dPos ~= nil)
+	if bPos and dPos then
+		local block = string.sub(source, bPos, dPos + #"--[[ SETTINGS_END ]]") .. "\nreturn SETTINGS\n"
+		local files = {}
+		local function boot()
+			local env = {
+				pcall = pcall, type = type, pairs = pairs, tostring = tostring,
+				string = string, table = table, math = math,
+				isfile = function(name) return files[name] ~= nil end,
+				readfile = function(name) return files[name] end,
+				writefile = function(name, data) files[name] = data end,
+			}
+			env.game = { GetService = function(_, name)
+				if name ~= "HttpService" then error("no stub for " .. name) end
+				return {
+					JSONEncode = function(_, value)
+						local keys, parts = {}, {}
+						for key in pairs(value) do keys[#keys + 1] = key end
+						table.sort(keys)
+						for _, key in ipairs(keys) do
+							local v = value[key]
+							local encoded = (type(v) == "string") and ('"' .. v .. '"') or tostring(v)
+							parts[#parts + 1] = '"' .. key .. '":' .. encoded
+						end
+						return "{" .. table.concat(parts, ",") .. "}"
+					end,
+					-- Lua patterns have no alternation, so strings and literals are
+					-- matched in two passes instead of one "a|b" pattern
+					JSONDecode = function(_, raw)
+						if type(raw) ~= "string" or string.sub(raw, 1, 1) ~= "{" then error("bad json", 0) end
+						local out = {}
+						for key, value in string.gmatch(raw, '"([%w_]+)"%s*:%s*"([^"]*)"') do
+							out[key] = value
+						end
+						for key, value in string.gmatch(raw, '"([%w_]+)"%s*:%s*([%a]+)') do
+							if value == "true" then out[key] = true
+							elseif value == "false" then out[key] = false
+							else out[key] = tonumber(value) end
+						end
+						return out
+					end,
+				}
+			end }
+			return luau.load(block, { environment = env, debug_name = "settings block" })()
+		end
+
+		local first = boot()
+		check("a fresh executor starts with the toggles on", first.flag("showFlyBtn", true) == true)
+		check("a fresh executor starts on auto", first.get("method", "auto") == "auto")
+		check("nothing is written before you flip something", files["settings.json"] == nil)
+
+		first.set("showFlyBtn", false)
+		check("flipping a toggle writes settings.json", type(files["settings.json"]) == "string", files["settings.json"])
+		check("the off state is what lands on disk",
+			string.find(files["settings.json"], '"showFlyBtn":false', 1, true) ~= nil, files["settings.json"])
+		first.set("method", "openrouter")
+
+		local second = boot()
+		check("the next run reads the toggle back", second.flag("showFlyBtn", true) == false)
+		check("the next run reads the method back", second.get("method", "auto") == "openrouter")
+
+		files["settings.json"] = "not json at all"
+		local third = boot()
+		check("a broken settings.json is ignored, not fatal", third.flag("showFlyBtn", true) == true)
+
+		files["settings.json"] = '{"showFlyBtn":"yes","method":7}'
+		local fourth = boot()
+		check("a hand-edited wrong type falls back to the default",
+			fourth.flag("showFlyBtn", true) == true and fourth.get("method", "auto") == "auto")
+	end
+end
+
+----------------------------------------------------------------------
+-- 18. the google call is the plain curl, byte for byte
+----------------------------------------------------------------------
+do
+	-- curl -s "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q=I%20love%20you%20bushra"
+	local h = newHarness({ google = true })
+	h.CHAT.setSpeakLang("es")
+	h.CHAT.enqueueSend("I love you bushra")
+	local req = h.calls[1] or {}
+	check("google is called once, with GET", #h.calls == 1 and string.upper(tostring(req.Method)) == "GET", #h.calls)
+	check("the url is the same request as plain curl",
+		req.Url == "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q=I%20love%20you%20bushra",
+		tostring(req.Url))
+	check("spaces are %20, not +", string.find(tostring(req.Url), "+", 1, true) == nil, req.Url)
+	check("no user-agent override is sent", req.Headers == nil, tostring(req.Headers and req.Headers["User-Agent"]))
 end
 
 print("")

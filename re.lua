@@ -18,6 +18,76 @@ local ON = Color3.fromRGB(80, 180, 90)
 local MUTED = Color3.fromRGB(140, 130, 160)
 local RED = Color3.fromRGB(160, 50, 60)
 
+--[[ SETTINGS_BEGIN ]]
+-- ============================================================
+-- SETTINGS: settings.json remembers the switches between runs
+--
+-- Flip a toggle or pick a translation method and the whole table goes to
+-- settings.json straight away, so the next execution starts with the same
+-- buttons on/off and the same engine. keys.json is left alone: that file
+-- stays API keys only.
+-- ============================================================
+local SETTINGS
+do
+	local FILE = "settings.json"
+	local data = {}
+
+	local function http()
+		local ok, service = pcall(function() return game:GetService("HttpService") end)
+		if ok and service then return service end
+		return nil
+	end
+
+	local function save()
+		if type(writefile) ~= "function" then return false end
+		local service = http()
+		if not service then return false end
+		local ok, payload = pcall(function() return service:JSONEncode(data) end)
+		if not ok or type(payload) ~= "string" then return false end
+		return (pcall(function() writefile(FILE, payload) end))
+	end
+
+	SETTINGS = {
+		file = FILE,
+		data = data,
+		save = save,
+		-- a stored value of the wrong type is stale or hand-edited: fall back
+		-- instead of handing a string to a toggle
+		get = function(key, default)
+			local value = data[key]
+			if value == nil or type(value) ~= type(default) then return default end
+			return value
+		end,
+		flag = function(key, default)
+			return SETTINGS.get(key, default == true)
+		end,
+		set = function(key, value)
+			if data[key] == value then return value end
+			data[key] = value
+			save()
+			return value
+		end,
+	}
+
+	if type(isfile) == "function" and type(readfile) == "function" then
+		local found = false
+		pcall(function() found = (isfile(FILE) == true) end)
+		if found then
+			local read, raw = pcall(readfile, FILE)
+			local service = http()
+			if read and service and type(raw) == "string" and raw ~= "" then
+				local ok, decoded = pcall(function() return service:JSONDecode(raw) end)
+				if ok and type(decoded) == "table" then
+					for key, value in pairs(decoded) do
+						if type(key) == "string" then data[key] = value end
+					end
+				end
+			end
+		end
+	end
+end
+--[[ SETTINGS_END ]]
+
 local open = false
 local emotesOpen = false
 local playersOpen = false
@@ -27,9 +97,10 @@ local jumpVal = 50
 local noclipOn = false
 local flyOn = false
 
-local showFlyBtn = true
-local showEmotesBtn = true
-local showPlayersBtn = true
+-- on/off state of the side buttons, as last left in settings.json
+local showFlyBtn = SETTINGS.flag("showFlyBtn", true)
+local showEmotesBtn = SETTINGS.flag("showEmotesBtn", true)
+local showPlayersBtn = SETTINGS.flag("showPlayersBtn", true)
 
 -- Tornado / Part Claim
 local tornadoEnabled = false
@@ -2423,7 +2494,7 @@ uiHint.Font = Enum.Font.Gotham
 uiHint.TextSize = 11
 uiHint.TextColor3 = MUTED
 uiHint.TextXAlignment = Enum.TextXAlignment.Left
-uiHint.Text = "Show / hide side buttons"
+uiHint.Text = "Show / hide side buttons \u{00B7} saved in " .. SETTINGS.file
 uiHint.Parent = uiPage
 
 local function makeUiToggle(text, y)
@@ -2460,11 +2531,13 @@ end
 
 flyToggleBtn.MouseButton1Click:Connect(function()
 	showFlyBtn = not showFlyBtn
+	SETTINGS.set("showFlyBtn", showFlyBtn)
 	refreshUiToggles()
 end)
 
 emotesToggleBtn.MouseButton1Click:Connect(function()
 	showEmotesBtn = not showEmotesBtn
+	SETTINGS.set("showEmotesBtn", showEmotesBtn)
 	if not showEmotesBtn then
 		emotesOpen = false
 		emotePanel.Visible = false
@@ -2475,6 +2548,7 @@ end)
 
 playersToggleBtn.MouseButton1Click:Connect(function()
 	showPlayersBtn = not showPlayersBtn
+	SETTINGS.set("showPlayersBtn", showPlayersBtn)
 	if not showPlayersBtn then
 		playersOpen = false
 		plrPanel.Visible = false
@@ -2498,12 +2572,22 @@ end)
 local TextChatService = game:GetService("TextChatService")
 local HttpService = game:GetService("HttpService")
 
+-- the header's engine choice survives a reload: it lives in settings.json
+local function savedMethod()
+	local saved = "auto"
+	if type(SETTINGS) == "table" and type(SETTINGS.get) == "function" then
+		local ok, value = pcall(SETTINGS.get, "method", "auto")
+		if ok and (value == "auto" or value == "google" or value == "openrouter") then saved = value end
+	end
+	return saved
+end
+
 local CHAT = {
 	messages = {},
 	nextId = 0,
 	replyTarget = nil,
 	speakLang = "auto", -- "auto" = send as typed, or match the message being replied to
-	method = "auto", -- "auto" = Google then OpenRouter, "google" / "openrouter" = only that one
+	method = savedMethod(), -- "auto" = Google then OpenRouter, "google" / "openrouter" = only that one
 	sending = false,
 	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
 	pendingEcho = {}, -- signature -> local row waiting for its own echo
@@ -3443,6 +3527,10 @@ end
 function CHAT.setMethod(mode)
 	if mode ~= "auto" and mode ~= "google" and mode ~= "openrouter" then mode = "auto" end
 	CHAT.method = mode
+	-- remembered the moment you pick it, so the next run opens on it
+	if type(SETTINGS) == "table" and type(SETTINGS.set) == "function" then
+		SETTINGS.set("method", mode)
+	end
 	API.engine = nil
 	-- picking Google is also a "try Google again": a resting Google would
 	-- otherwise keep the next message on OpenRouter against your choice
@@ -3498,7 +3586,6 @@ function GOOGLE.translate(text, target)
 		Url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
 			.. urlEncode(target) .. "&dt=t&q=" .. urlEncode(text),
 		Method = "GET",
-		Headers = { ["User-Agent"] = "Mozilla/5.0" },
 	})
 	if not res then
 		return GOOGLE.fail("Google Translate did not answer", GOOGLE.hiccupRest)
