@@ -2482,15 +2482,6 @@ local CHAT = {
 	apiRequests = 0, -- diagnostics: how many OpenRouter calls this session made
 	pendingEcho = {}, -- signature -> local row waiting for its own echo
 	seen = {}, -- signature -> clock, kills duplicate listeners
-	tab = "general", -- "general" | "friends"
-	friendIds = {}, -- [userId] = true, filled by CHAT.refreshFriends
-	friendsLoaded = false,
-	friendsAt = 0,
-	view = "list", -- "list" | "thread" (one friend's conversation is open)
-	threadId = nil, -- userId of the friend whose conversation is open
-	threadName = nil,
-	friends = {}, -- array of { userId, name }, filled by CHAT.refreshFriends
-	thumbs = {}, -- [userId] = image url, false while loading or after a failure
 	notify = function() end,
 	onNew = function() end,
 	onUpdate = function() end,
@@ -3531,7 +3522,6 @@ function CHAT.pushMessage(playerName, userId, text, channel)
 		mine = mine,
 		sent = mine or nil,
 		channel = channel or "RBXGeneral",
-		friend = (not mine and CHAT.friendIds[userId or 0]) and true or nil,
 	}
 
 	-- free tagging only: nothing here talks to OpenRouter
@@ -3551,15 +3541,10 @@ function CHAT.pushMessage(playerName, userId, text, channel)
 	return msg
 end
 
--- 0 requests: which rows belong to the tab that is open.
+-- 0 requests: which rows belong in the list. Only the general channel is
+-- shown: team, whisper, trade and any other extra channel stays out.
 function CHAT.isVisible(msg)
 	if not msg then return false end
-	local tab = CHAT.tab or "general"
-	if tab == "friends" then
-		return msg.mine == true or msg.friend == true
-	end
-	-- the general channel only: team, whisper, trade and any other extra
-	-- channel stays out of this tab
 	local name = string.lower(tostring(msg.channel or "RBXGeneral"))
 	if string.find(name, "team", 1, true) or string.find(name, "whisper", 1, true) then
 		return false
@@ -3567,224 +3552,6 @@ function CHAT.isVisible(msg)
 	return string.find(name, "general", 1, true) ~= nil
 end
 
--- 0 requests: switching tabs only shows or hides rows that already exist.
-function CHAT.setTab(tab)
-	if tab ~= "friends" then tab = "general" end
-	CHAT.tab = tab
-	CHAT.view = "list"
-	CHAT.threadId = nil
-	CHAT.threadName = nil
-	CHAT.onState()
-end
-
--- 0 requests: opening a friend's conversation is a view change only.
-function CHAT.openThread(userId, name)
-	if not userId then return end
-	CHAT.threadId = userId
-	CHAT.threadName = name or CHAT.friendName(userId)
-	CHAT.view = "thread"
-	CHAT.replyTarget = nil
-	CHAT.onState()
-end
-
-function CHAT.closeThread()
-	CHAT.threadId = nil
-	CHAT.threadName = nil
-	CHAT.view = "list"
-	CHAT.onState()
-end
-
-function CHAT.friendName(userId)
-	for _, f in ipairs(CHAT.friends) do
-		if f.userId == userId then return f.name end
-	end
-	for i = #CHAT.messages, 1, -1 do
-		local msg = CHAT.messages[i]
-		if msg.userId == userId then return msg.playerName end
-	end
-	return "User " .. tostring(userId)
-end
-
--- 0 requests: a line belongs to the open conversation when it is either
--- something I sent from that thread or something that friend said.
-function CHAT.inThread(msg)
-	local id = CHAT.threadId
-	if not id or not msg then return false end
-	if msg.mine then return msg.thread == id end
-	return msg.userId == id
-end
-
--- 0 requests: newest line received from a friend, or nil.
-function CHAT.lastFrom(userId)
-	for i = #CHAT.messages, 1, -1 do
-		local msg = CHAT.messages[i]
-		if not msg.mine and msg.userId == userId then return msg end
-	end
-	return nil
-end
-
--- 0 requests: every friend, newest conversation first, then the quiet ones.
-function CHAT.friendRows()
-	local rows, known = {}, {}
-	for _, f in ipairs(CHAT.friends) do
-		if f.userId and not known[f.userId] then
-			local row = { userId = f.userId, name = f.name }
-			known[f.userId] = row
-			rows[#rows + 1] = row
-		end
-	end
-	-- a friend who is talking here but missing from the list still gets a row
-	-- (the friends endpoint can be blocked, which is why it is not relied on)
-	for _, msg in ipairs(CHAT.messages) do
-		local uid = msg.userId
-		if not msg.mine and uid and CHAT.friendIds[uid] and not known[uid] then
-			local row = { userId = uid, name = msg.playerName }
-			known[uid] = row
-			rows[#rows + 1] = row
-		end
-	end
-	for _, row in ipairs(rows) do row.last = CHAT.lastFrom(row.userId) end
-	table.sort(rows, function(a, b)
-		if a.last and b.last then return a.last.id > b.last.id end
-		if a.last ~= nil and b.last == nil then return true end
-		if a.last == nil and b.last ~= nil then return false end
-		return string.lower(tostring(a.name)) < string.lower(tostring(b.name))
-	end)
-	return rows
-end
-
--- 0 requests: the lines exchanged with the open friend, oldest first.
-function CHAT.threadMessages()
-	local out = {}
-	if not CHAT.threadId then return out end
-	for _, msg in ipairs(CHAT.messages) do
-		if CHAT.inThread(msg) then out[#out + 1] = msg end
-	end
-	return out
-end
-
--- 0 requests: the whisper channel shared with that friend, when one exists.
--- Only a server script can create whisper channels, so nil is normal and the
--- message then goes to the channel the panel already talks in.
-function CHAT.whisperChannel(userId)
-	local found = nil
-	pcall(function()
-		local channels = TextChatService.TextChannels
-		for _, ch in ipairs(channels:GetChildren()) do
-			local name = tostring(ch.Name)
-			if string.find(name, "RBXWhisper", 1, true) then
-				local a, b = string.match(name, "(%d+)_(%d+)")
-				if a and b then
-					a, b = tonumber(a), tonumber(b)
-					if (a == player.UserId and b == userId) or (b == player.UserId and a == userId) then
-						found = name
-						break
-					end
-				end
-			end
-		end
-	end)
-	return found
-end
-
--- 0 requests: profile pictures, cached per user; a failure is not retried.
-function CHAT.thumbnail(userId, cb)
-	if not userId then return nil end
-	local cached = CHAT.thumbs[userId]
-	if cached == false then return nil end
-	if cached then
-		if cb then pcall(cb, cached) end
-		return cached
-	end
-	CHAT.thumbs[userId] = false
-	task.spawn(function()
-		local url = nil
-		pcall(function()
-			local content, ready = Players:GetUserThumbnailAsync(
-				userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
-			if ready ~= false then url = content end
-		end)
-		CHAT.thumbs[userId] = url or false
-		if url and cb then pcall(cb, url) end
-	end)
-	return nil
-end
-
--- 0 requests: the friend list comes from the players service, not OpenRouter.
--- Cached for two minutes; every row is re-tagged when it lands.
-function CHAT.refreshFriends(force)
-	if CHAT.friendsBusy then return end
-	if not force and CHAT.friendsLoaded and (os.clock() - (CHAT.friendsAt or 0)) < 120 then
-		return
-	end
-	CHAT.friendsBusy = true
-	task.spawn(function()
-		local ids = {}
-		local list = {}
-		local fetched = false
-		pcall(function()
-			local pages = Players:GetFriendsAsync(player.UserId)
-			if not pages then return end
-			while true do
-				local items = pages:GetCurrentPage()
-				for _, item in ipairs(items or {}) do
-					-- FriendPages entries carry Id / Username / DisplayName
-					-- (IsOnline was removed from the api, so it is not used)
-					local id = item.Id or item.UserId
-					if id and not ids[id] then
-						ids[id] = true
-						list[#list + 1] = {
-							userId = id,
-							name = item.DisplayName or item.Username or ("User" .. tostring(id)),
-							username = item.Username,
-						}
-					end
-				end
-				fetched = true
-				if pages.IsFinished then break end
-				pages:AdvanceToNextPageAsync()
-			end
-		end)
-		CHAT.friendsBusy = false
-		if not fetched then
-			-- the friends endpoint can be blocked: ask about the people who are
-			-- actually talking here instead, at most 30 of them
-			local checked = 0
-			for _, msg in ipairs(CHAT.messages) do
-				if checked >= 30 then break end
-				local uid = msg.userId
-				if not msg.mine and uid and uid ~= player.UserId and ids[uid] == nil then
-					checked = checked + 1
-					local ok, isFriend = pcall(function()
-						return player:IsFriendsWithAsync(uid)
-					end)
-					if ok and isFriend == true then ids[uid] = true end
-				end
-			end
-			for _, msg in ipairs(CHAT.messages) do
-				msg.friend = (not msg.mine and ids[msg.userId]) and true or nil
-			end
-			for _, msg in ipairs(CHAT.messages) do
-				local uid = msg.userId
-				if not msg.mine and uid and ids[uid] and not list[uid] then
-					list[uid] = true
-					list[#list + 1] = { userId = uid, name = msg.playerName }
-				end
-			end
-			CHAT.friends = list
-			pcall(function() CHAT.onState() end)
-			return
-		end
-		CHAT.friendIds = ids
-		CHAT.friends = list
-		CHAT.friendsLoaded = true
-		CHAT.friendsAt = os.clock()
-		for _, msg in ipairs(CHAT.messages) do
-			msg.friend = (not msg.mine and ids[msg.userId]) and true or nil
-		end
-		CHAT.onState()
-	end)
-end
 
 -- 0 requests: remembers which message you are answering.
 function CHAT.replyTo(msg)
@@ -3807,8 +3574,8 @@ end
 -- 0 requests: works out what the next message should be sent as.
 -- target = language code when it is known, inferFrom = the message whose
 -- language has to be worked out by the single translation request.
-function CHAT.outTarget(forMsg)
-	local reply = forMsg or CHAT.replyTarget
+function CHAT.outTarget()
+	local reply = CHAT.replyTarget
 	local speak = CHAT.speakLang or "auto"
 
 	if speak ~= "auto" then
@@ -3852,7 +3619,7 @@ function CHAT.buildOutgoing(text, target, inferFrom)
 end
 
 -- 0 requests: puts our line in the panel and sends it exactly once.
-function CHAT.dispatch(toSend, lang, channelName, threadId)
+function CHAT.dispatch(toSend, lang, channelName)
 	toSend = trim(toSend)
 	if toSend == "" then return false end
 
@@ -3871,8 +3638,6 @@ function CHAT.dispatch(toSend, lang, channelName, threadId)
 		mine = true,
 		sent = false,
 		channel = channelName or "RBXGeneral",
-		thread = threadId,
-		friend = false,
 	}
 	-- registered before SendAsync yields, so the echo the server sends back
 	-- finds this row instead of adding a second copy of it
@@ -3929,10 +3694,8 @@ function CHAT.enqueueSend(text)
 	if text == "" then return false end
 	if CHAT.sending then return false end
 
+	local target, inferFrom = CHAT.outTarget()
 	local reply = CHAT.replyTarget
-	local threadId = (CHAT.view == "thread") and CHAT.threadId or nil
-	local partner = threadId and CHAT.lastFrom(threadId) or nil
-	local target, inferFrom = CHAT.outTarget(partner)
 	CHAT.sending = true
 	CHAT.replyTarget = nil
 	CHAT.onState()
@@ -3944,16 +3707,11 @@ function CHAT.enqueueSend(text)
 				CHAT.notify(utf8.char(9888) .. " Could not translate to "
 					.. LANG.displayName(usedLang) .. ": " .. tostring(terr))
 			end
-			local channelName = reply and reply.channel
-			if threadId then
-				channelName = CHAT.whisperChannel(threadId) or channelName
-			end
-			if not CHAT.dispatch(toSend, usedLang, channelName, threadId) then
+			if not CHAT.dispatch(toSend, usedLang, reply and reply.channel) then
 				CHAT.notify(utf8.char(9888) .. " Message was not sent")
 			end
-			local learn = reply and reply.userId or threadId
-			if learn and usedLang and usedLang ~= "en" then
-				LANG.remember(learn, usedLang)
+			if reply and usedLang and usedLang ~= "en" then
+				LANG.remember(reply.userId, usedLang)
 			end
 		end)
 		if not ok and err then
@@ -4032,8 +3790,6 @@ function CHAT.startListening()
 		end)
 	end)
 
-	CHAT.refreshFriends()
-
 	local modern = true
 	pcall(function()
 		modern = TextChatService.ChatVersion == Enum.ChatVersion.TextChatService
@@ -4101,69 +3857,10 @@ local function buildChatPanel()
 	cClose.Parent = cHeader
 	Instance.new("UICorner", cClose).CornerRadius = UDim.new(0, 6)
 
-	-- shown only while a friend's conversation is open
-	local cBack = Instance.new("TextButton")
-	cBack.Size = UDim2.fromOffset(26, 24)
-	cBack.Position = UDim2.fromOffset(8, 8)
-	cBack.BackgroundColor3 = PURPLE_DIM
-	cBack.Text = "←"
-	cBack.TextSize = 14
-	cBack.Font = Enum.Font.GothamBold
-	cBack.TextColor3 = TEXT
-	cBack.Visible = false
-	cBack.Parent = cHeader
-	Instance.new("UICorner", cBack).CornerRadius = UDim.new(0, 6)
-
-	local cAvatar = Instance.new("ImageLabel")
-	cAvatar.Size = UDim2.fromOffset(24, 24)
-	cAvatar.Position = UDim2.fromOffset(40, 8)
-	cAvatar.BackgroundColor3 = BG
-	cAvatar.Image = ""
-	cAvatar.Visible = false
-	cAvatar.Parent = cHeader
-	Instance.new("UICorner", cAvatar).CornerRadius = UDim.new(1, 0)
-
-	-- tabs: which conversation the list shows --------------------------------
-	local tabDefs = {
-		{ key = "general", label = "General" },
-		{ key = "friends", label = "Friends" },
-	}
-	local tabBar = Instance.new("Frame")
-	tabBar.Size = UDim2.new(1, -16, 0, 20)
-	tabBar.Position = UDim2.fromOffset(8, 42)
-	tabBar.BackgroundTransparency = 1
-	tabBar.Parent = chatPanel
-	local tabBtns = {}
-	for i, def in ipairs(tabDefs) do
-		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(1 / #tabDefs, -2, 1, 0)
-		b.Position = UDim2.new((i - 1) / #tabDefs, 1, 0, 0)
-		b.BackgroundColor3 = PANEL
-		b.Text = def.label
-		b.Font = Enum.Font.GothamBold
-		b.TextSize = 11
-		b.TextColor3 = MUTED
-		b.Parent = tabBar
-		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
-		tabBtns[def.key] = b
-		b.MouseButton1Click:Connect(function()
-			CHAT.setTab(def.key)
-			if def.key == "friends" then CHAT.refreshFriends() end
-		end)
-	end
-	local function refreshTabBtns()
-		for _, def in ipairs(tabDefs) do
-			local b = tabBtns[def.key]
-			local on = (CHAT.tab or "general") == def.key
-			b.BackgroundColor3 = on and PURPLE_DIM or PANEL
-			b.TextColor3 = on and TEXT or MUTED
-		end
-	end
-
 	-- language selector bar -------------------------------------------------
 	local langBar = Instance.new("Frame")
 	langBar.Size = UDim2.new(1, -16, 0, 26)
-	langBar.Position = UDim2.fromOffset(8, 66)
+	langBar.Position = UDim2.fromOffset(8, 46)
 	langBar.BackgroundColor3 = PANEL
 	langBar.Parent = chatPanel
 	Instance.new("UICorner", langBar).CornerRadius = UDim.new(0, 7)
@@ -4242,8 +3939,8 @@ local function buildChatPanel()
 
 	-- messages -------------------------------------------------------------
 	local chatScroll = Instance.new("ScrollingFrame")
-	chatScroll.Size = UDim2.new(1, -16, 1, -162)
-	chatScroll.Position = UDim2.fromOffset(8, 96)
+	chatScroll.Size = UDim2.new(1, -16, 1, -146)
+	chatScroll.Position = UDim2.fromOffset(8, 78)
 	chatScroll.BackgroundTransparency = 1
 	chatScroll.BorderSizePixel = 0
 	chatScroll.ScrollBarThickness = 4
@@ -4258,38 +3955,6 @@ local function buildChatPanel()
 		chatScroll.CanvasSize = UDim2.new(0, 0, 0, chatLayout.AbsoluteContentSize.Y + 8)
 		chatScroll.CanvasPosition = Vector2.new(0, math.max(0, chatLayout.AbsoluteContentSize.Y - chatScroll.AbsoluteSize.Y))
 	end)
-
-	-- friends + one conversation use the same rectangle as the message list,
-	-- so switching between them moves nothing on screen
-	local function makePane()
-		local pane = Instance.new("ScrollingFrame")
-		pane.Size = UDim2.new(1, -16, 1, -162)
-		pane.Position = UDim2.fromOffset(8, 96)
-		pane.BackgroundTransparency = 1
-		pane.BorderSizePixel = 0
-		pane.ScrollBarThickness = 4
-		pane.ScrollBarImageColor3 = PURPLE
-		pane.CanvasSize = UDim2.new(0, 0, 0, 0)
-		pane.Visible = false
-		pane.Parent = chatPanel
-		local layout = Instance.new("UIListLayout")
-		layout.Padding = UDim.new(0, 6)
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		layout.Parent = pane
-		layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-			pane.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
-		end)
-		return pane
-	end
-
-	local friendsScroll = makePane()
-	local threadScroll = makePane()
-	local threadLayout = threadScroll:FindFirstChildOfClass("UIListLayout")
-	if threadLayout then
-		threadLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-			threadScroll.CanvasPosition = Vector2.new(0, math.max(0, threadLayout.AbsoluteContentSize.Y - threadScroll.AbsoluteSize.Y))
-		end)
-	end
 
 	local replyBar = Instance.new("Frame")
 	replyBar.Size = UDim2.new(1, -16, 0, 56)
@@ -4373,18 +4038,6 @@ local function buildChatPanel()
 			end
 			replyHint.Text = hint .. " - 1 request when you send"
 			replyHint.TextColor3 = ON
-		elseif CHAT.view == "thread" and CHAT.threadId then
-			local partner = CHAT.lastFrom(CHAT.threadId)
-			local code = partner and (partner.lang or LANG.playerLang[CHAT.threadId])
-			if (CHAT.speakLang or "auto") ~= "auto" then
-				langBtn.Text = "Speak in: " .. LANG.displayName(CHAT.speakLang) .. " 🔽"
-			elseif code and code ~= "en" then
-				langBtn.Text = "Reply in: " .. LANG.displayName(code) .. " 🔽"
-			else
-				langBtn.Text = "Reply in: their language  🔽"
-			end
-			replyHint.Text = "Messaging " .. tostring(CHAT.threadName or "friend") .. " - 1 request when you send"
-			replyHint.TextColor3 = ON
 		elseif (CHAT.speakLang or "auto") == "auto" then
 			langBtn.Text = "Speak in: Auto (as typed)  🔽"
 			replyHint.Text = "Type message (tap a line to reply, 🌐 to translate)"
@@ -4408,9 +4061,8 @@ local function buildChatPanel()
 	end
 
 	-- repaint a row from its stored state (no requests happen here)
-	local function paintRow(msg, row)
-		row = row or msg._row
-		if row and row._nameLbl then
+	local function paintRow(msg)
+		if msg._nameLbl then
 			local tag = msg.lang or msg.langHint
 			local bits = {}
 			if msg.mine then
@@ -4426,38 +4078,37 @@ local function buildChatPanel()
 				bits[#bits + 1] = "(" .. tostring(msg.channel) .. ")"
 			end
 			local suffix = (#bits > 0) and ("  " .. table.concat(bits, " ")) or ""
-			row._nameLbl.Text = (msg.friend and "⭐ " or "") .. msg.playerName .. suffix
+			msg._nameLbl.Text = msg.playerName .. suffix
 		end
-		if row and row._textLbl then
+		if msg._textLbl then
 			if msg.state == "translated" and msg.translated then
-				row._textLbl.Text = msg.translated
-				row._textLbl.TextColor3 = TEXT
+				msg._textLbl.Text = msg.translated
+				msg._textLbl.TextColor3 = TEXT
 			elseif msg.state == "error" then
-				row._textLbl.Text = msg.original .. "\n" .. utf8.char(9888) .. " " .. (msg.err or "translation failed")
-				row._textLbl.TextColor3 = RED
+				msg._textLbl.Text = msg.original .. "\n" .. utf8.char(9888) .. " " .. (msg.err or "translation failed")
+				msg._textLbl.TextColor3 = RED
 			else
-				row._textLbl.Text = msg.display
-				row._textLbl.TextColor3 = TEXT
+				msg._textLbl.Text = msg.display
+				msg._textLbl.TextColor3 = TEXT
 			end
 		end
-		if row and row._trBtn then
+		if msg._trBtn then
 			if msg.busy then
-				row._trBtn.Text = "..."
+				msg._trBtn.Text = "..."
 			elseif msg.state == "translated" then
-				row._trBtn.Text = "🔁"
+				msg._trBtn.Text = "🔁"
 			else
-				row._trBtn.Text = "🌐"
+				msg._trBtn.Text = "🌐"
 			end
 		end
 	end
 
-	local function addMessageRow(msg, parent)
-		local host = parent or chatScroll
+	local function addMessageRow(msg)
 		local row = Instance.new("Frame")
 		row.Size = UDim2.new(1, -4, 0, 0)
 		row.AutomaticSize = Enum.AutomaticSize.Y
 		row.BackgroundColor3 = PANEL
-		row.Parent = host
+		row.Parent = chatScroll
 		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
 		local pad = Instance.new("UIPadding", row)
 		pad.PaddingTop = UDim.new(0, 6)
@@ -4487,13 +4138,9 @@ local function buildChatPanel()
 		textLbl.TextWrapped = true
 		textLbl.Parent = row
 
-		row._nameLbl = nameLbl
-		row._textLbl = textLbl
-		if host == threadScroll then
-			msg._threadRow = row
-		else
-			msg._row = row
-		end
+		msg._row = row
+		msg._nameLbl = nameLbl
+		msg._textLbl = textLbl
 
 		local trBtn = Instance.new("TextButton")
 		trBtn.Size = UDim2.fromOffset(28, 22)
@@ -4505,7 +4152,7 @@ local function buildChatPanel()
 		trBtn.TextColor3 = TEXT
 		trBtn.Parent = row
 		Instance.new("UICorner", trBtn).CornerRadius = UDim.new(0, 4)
-		row._trBtn = trBtn
+		msg._trBtn = trBtn
 
 		local rpBtn = Instance.new("TextButton")
 		rpBtn.Size = UDim2.fromOffset(28, 22)
@@ -4532,179 +4179,27 @@ local function buildChatPanel()
 			replyBox:CaptureFocus()
 		end)
 
-		row.Visible = (host == threadScroll) or CHAT.isVisible(msg)
-		paintRow(msg, row)
+		row.Visible = CHAT.isVisible(msg)
+		paintRow(msg)
 		return row
 	end
 
-	local function applyTabFilter()
+	local function applyChannelFilter()
 		for _, msg in ipairs(CHAT.messages) do
 			if msg._row then msg._row.Visible = CHAT.isVisible(msg) end
 		end
 	end
 
-	-- what the header says: chat title, or the friend's name plus a way back
-	local function refreshHeader()
-		local open = CHAT.view == "thread" and CHAT.threadId ~= nil
-		cBack.Visible = open
-		cAvatar.Visible = open
-		if open then
-			cTitle.Text = tostring(CHAT.threadName or "Friend")
-			cTitle.Position = UDim2.fromOffset(70, 0)
-			cTitle.Size = UDim2.new(1, -186, 1, 0)
-			cTitle.TextSize = 14
-			cAvatar.Image = CHAT.thumbnail(CHAT.threadId, function(url)
-				cAvatar.Image = url
-			end) or ""
-		else
-			cTitle.Text = "Chat + Translate"
-			cTitle.Position = UDim2.fromOffset(14, 0)
-			cTitle.Size = UDim2.new(1, -110, 1, 0)
-			cTitle.TextSize = 15
-			cAvatar.Image = ""
-		end
-	end
-
-	local function makeAvatar(parent, size, x, y)
-		local img = Instance.new("ImageLabel")
-		img.Size = UDim2.fromOffset(size, size)
-		img.Position = UDim2.fromOffset(x, y)
-		img.BackgroundColor3 = BG
-		img.Image = ""
-		img.Parent = parent
-		Instance.new("UICorner", img).CornerRadius = UDim.new(1, 0)
-		return img
-	end
-
-	-- 0 requests: every friend with their profile picture and last line
-	local function refreshFriendsView()
-		for _, child in ipairs(friendsScroll:GetChildren()) do
-			if child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel") then
-				child:Destroy()
-			end
-		end
-		local rows = CHAT.friendRows()
-		if #rows == 0 then
-			local empty = Instance.new("TextLabel")
-			empty.Size = UDim2.new(1, -8, 0, 46)
-			empty.BackgroundTransparency = 1
-			empty.Font = Enum.Font.Gotham
-			empty.TextSize = 11
-			empty.TextColor3 = MUTED
-			empty.TextWrapped = true
-			empty.TextXAlignment = Enum.TextXAlignment.Left
-			empty.Text = "No friends loaded yet. The friends list can be blocked by the server; friends who talk in this server still appear here."
-			empty.Parent = friendsScroll
-			return
-		end
-		for _, row in ipairs(rows) do
-			local card = Instance.new("TextButton")
-			card.Size = UDim2.new(1, -4, 0, 42)
-			card.BackgroundColor3 = PANEL
-			card.Text = ""
-			card.AutoButtonColor = true
-			card.Parent = friendsScroll
-			Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-
-			local avatar = makeAvatar(card, 30, 6, 6)
-			local cached = CHAT.thumbnail(row.userId, function(url)
-				avatar.Image = url
-			end)
-			if cached then avatar.Image = cached end
-
-			local nameLbl = Instance.new("TextLabel")
-			nameLbl.BackgroundTransparency = 1
-			nameLbl.Size = UDim2.new(1, -52, 0, 15)
-			nameLbl.Position = UDim2.fromOffset(42, 5)
-			nameLbl.Font = Enum.Font.GothamBold
-			nameLbl.TextSize = 12
-			nameLbl.TextColor3 = PURPLE
-			nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-			nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
-			nameLbl.Text = tostring(row.name)
-			nameLbl.Parent = card
-
-			local lastLbl = Instance.new("TextLabel")
-			lastLbl.BackgroundTransparency = 1
-			lastLbl.Size = UDim2.new(1, -52, 0, 16)
-			lastLbl.Position = UDim2.fromOffset(42, 20)
-			lastLbl.Font = Enum.Font.Gotham
-			lastLbl.TextSize = 11
-			lastLbl.TextColor3 = MUTED
-			lastLbl.TextXAlignment = Enum.TextXAlignment.Left
-			lastLbl.TextTruncate = Enum.TextTruncate.AtEnd
-			lastLbl.Text = row.last and (row.last.display or row.last.original) or "No messages in this server yet"
-			lastLbl.Parent = card
-
-			card.MouseButton1Click:Connect(function()
-				CHAT.openThread(row.userId, row.name)
-			end)
-		end
-	end
-
-	-- 0 requests: the conversation itself, rebuilt from the message log
-	local function refreshThreadView()
-		for _, child in ipairs(threadScroll:GetChildren()) do
-			if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
-		end
-		if not CHAT.threadId then return end
-		local lines = CHAT.threadMessages()
-		if #lines == 0 then
-			local hint = Instance.new("TextLabel")
-			hint.Size = UDim2.new(1, -8, 0, 52)
-			hint.BackgroundTransparency = 1
-			hint.Font = Enum.Font.Gotham
-			hint.TextSize = 11
-			hint.TextColor3 = MUTED
-			hint.TextWrapped = true
-			hint.TextXAlignment = Enum.TextXAlignment.Left
-			hint.Text = "Nothing with " .. tostring(CHAT.threadName or "them") .. " in this server yet. Roblox scripts cannot read private messages or reach other servers, so this fills in from chat here."
-			hint.Parent = threadScroll
-			return
-		end
-		for _, msg in ipairs(lines) do
-			msg._threadRow = nil
-			addMessageRow(msg, threadScroll)
-		end
-	end
-
-	-- 0 requests: which of the three lists is on screen
-	local function refreshPanes()
-		local open = CHAT.view == "thread" and CHAT.threadId ~= nil
-		threadScroll.Visible = open
-		chatScroll.Visible = (not open) and CHAT.tab ~= "friends"
-		friendsScroll.Visible = (not open) and CHAT.tab == "friends"
-		if open then
-			refreshThreadView()
-		elseif friendsScroll.Visible then
-			refreshFriendsView()
-		end
-	end
-
 	CHAT.onNew = function(msg)
 		addMessageRow(msg)
-		applyTabFilter()
-		if threadScroll.Visible and CHAT.inThread(msg) then
-			addMessageRow(msg, threadScroll) -- the new line joins the open thread
-		elseif friendsScroll.Visible then
-			refreshFriendsView()
-		end
+		applyChannelFilter()
 	end
-	CHAT.onUpdate = function(msg)
-		paintRow(msg, msg._row)
-		paintRow(msg, msg._threadRow)
-	end
+	CHAT.onUpdate = paintRow
 	CHAT.onState = function()
 		refreshLangBar()
 		refreshSendUi()
-		refreshTabBtns()
-		refreshHeader()
-		applyTabFilter()
-		refreshPanes()
+		applyChannelFilter()
 	end
-	cBack.MouseButton1Click:Connect(function()
-		CHAT.closeThread()
-	end)
 	CHAT.notify = function(text)
 		showToast(text, 7)
 	end
@@ -4814,7 +4309,8 @@ local function buildChatPanel()
 	end)
 
 	CHAT.startListening()
-	CHAT.onState() -- paints the header, the tabs and the General list
+	refreshLangBar()
+	refreshSendUi()
 end
 buildChatPanel()
 

@@ -94,22 +94,8 @@ local function newHarness(opts)
 	end
 
 	local channel = {
-		Name = "RBXGeneral",
-		SendAsync = function(_, text)
-			h.sent[#h.sent + 1] = text
-			h.lastChannel = "RBXGeneral"
-		end,
+		SendAsync = function(_, text) h.sent[#h.sent + 1] = text end,
 	}
-	local extraChannels = {}
-	if opts.whisper then
-		extraChannels[1] = {
-			Name = "RBXWhisper:" .. tostring(opts.whisper[1]) .. "_" .. tostring(opts.whisper[2]),
-			SendAsync = function(self, text)
-				h.sent[#h.sent + 1] = text
-				h.lastChannel = self.Name
-			end,
-		}
-	end
 	local TextChatService = {
 		ChatVersion = opts.legacy and "LegacyChatService" or "TextChatService",
 		MessageReceived = {
@@ -121,15 +107,7 @@ local function newHarness(opts)
 		TextChannels = {
 			FindFirstChild = function(_, name)
 				if name == "RBXGeneral" then return channel end
-				for _, ch in ipairs(extraChannels) do
-					if ch.Name == name then return ch end
-				end
 				return nil
-			end,
-			GetChildren = function()
-				local list = { channel }
-				for _, ch in ipairs(extraChannels) do list[#list + 1] = ch end
-				return list
 			end,
 		},
 	}
@@ -170,12 +148,6 @@ local function newHarness(opts)
 			if id == 1 then return localPlayer end
 			return { UserId = id, DisplayName = "God", Name = "God" }
 		end,
-		-- documented shape: (content, isReady), and it is cached, so the
-		-- harness counts how often it is actually asked
-		GetUserThumbnailAsync = function(_, id)
-			h.thumbCalls = (h.thumbCalls or 0) + 1
-			return "rbxthumb://" .. tostring(id), true
-		end,
 		GetFriendsAsync = function(_, _userId)
 			local page = {}
 			for i, id in ipairs(opts.friends or {}) do
@@ -206,11 +178,7 @@ local function newHarness(opts)
 		game = gameStub,
 		Players = players,
 		player = localPlayer,
-		Enum = {
-			ChatVersion = { TextChatService = "TextChatService" },
-			ThumbnailType = { HeadShot = "HeadShot" },
-			ThumbnailSize = { Size100x100 = "Size100x100" },
-		},
+		Enum = { ChatVersion = { TextChatService = "TextChatService" } },
 		HttpService = HttpService,
 		request = fakeRequest,
 		utf8 = utf8,
@@ -535,45 +503,30 @@ do
 end
 
 ----------------------------------------------------------------------
--- 9. channel + friend tabs: what the panel shows, 0 requests
+-- 9. only the general channel is shown: no tabs, 0 requests
 ----------------------------------------------------------------------
 do
-	local h = newHarness({ friends = { 77 } })
+	local h = newHarness({})
 	local C = h.CHAT
-	check("friend list loads at startup", C.friendsLoaded == true and C.friendIds[77] == true)
-	check("panel opens on the general tab", C.tab == "general", C.tab)
 
 	receive(h, 77, "eae mano", "RBXGeneral")
 	receive(h, 88, "hi there", "RBXGeneral")
 	receive(h, 88, "team only line", "RBXTeam")
 	receive(h, 88, "selling a sword", "Trade")
+	receive(h, 88, "psst", "RBXWhisper:1_88")
 	check("channel is recorded", C.messages[3].channel == "RBXTeam", C.messages[3].channel)
 	check("second channel is recorded", C.messages[4].channel == "Trade", C.messages[4].channel)
 	check("general default channel", C.messages[2].channel == "RBXGeneral", C.messages[2].channel)
-	check("friend message is flagged", C.messages[1].friend == true)
-	check("stranger message is not flagged", C.messages[2].friend == nil)
+	check("general line shown", C.isVisible(C.messages[1]) == true)
+	check("stranger in general shown", C.isVisible(C.messages[2]) == true)
+	check("team row hidden", C.isVisible(C.messages[3]) == false)
+	check("trade row hidden", C.isVisible(C.messages[4]) == false)
+	check("whisper row hidden", C.isVisible(C.messages[5]) == false)
 
-	C.setTab("friends")
-	check("friends tab: friend row shown", C.isVisible(C.messages[1]) == true)
-	check("friends tab: stranger row hidden", C.isVisible(C.messages[2]) == false)
-	check("friends tab: other channel hidden", C.isVisible(C.messages[3]) == false)
-
-	C.setTab("general")
-	check("general tab: general channel shown", C.isVisible(C.messages[1]) == true)
-	check("general tab: stranger in general shown", C.isVisible(C.messages[2]) == true)
-	check("general tab: team row hidden", C.isVisible(C.messages[3]) == false)
-	check("general tab: other channel hidden", C.isVisible(C.messages[4]) == false)
-	check("general tab: my own line shown", C.isVisible(C.messages[2]) == true)
-	C.setTab("all")
-	check("there is no all tab: asking for it lands on general", C.tab == "general", C.tab)
-	C.setTab("global")
-	check("there is no global tab either", C.tab == "general", C.tab)
-
-	-- my own lines stay visible while reading the friends tab
-	C.setTab("friends")
 	C.enqueueSend("my own line")
-	check("friends tab keeps my own line", C.isVisible(last(C.messages)) == true)
-	check("tabs cost no requests", #h.calls == 0, #h.calls)
+	check("my own line shown", C.isVisible(last(C.messages)) == true)
+	check("no tab can hide it", C.tab == nil)
+	check("filtering costs no requests", #h.calls == 0, #h.calls)
 end
 
 ----------------------------------------------------------------------
@@ -674,75 +627,6 @@ do
 	off.CHAT.enqueueSend("hello there")
 	check("a rested google is not called at all", googleCalls(off) == 0, googleCalls(off))
 	check("rested google still sends via openrouter", last(off.sent) == "Hola amigo", last(off.sent))
-end
-
-----------------------------------------------------------------------
--- 12. friends list + one friend's conversation (0 requests until you send)
-----------------------------------------------------------------------
-do
-	local h = newHarness({ friends = { 77, 88 }, google = true })
-	local C = h.CHAT
-	check("friends are stored with names", #C.friends == 2 and C.friends[1].name == "Friend77", #C.friends)
-	check("every friend gets a list row", #C.friendRows() == 2, #C.friendRows())
-
-	receive(h, 88, "eae mano", "RBXGeneral")
-	receive(h, 77, "hola amigo", "RBXGeneral")
-	local rows = C.friendRows()
-	check("friend who talked last comes first", rows[1].userId == 77, rows[1].userId)
-	check("their last line is on the row",
-		rows[1].last ~= nil and rows[1].last.original == "hola amigo", rows[1].last and rows[1].last.original)
-	check("the quiet friend is still listed", #rows == 2, #rows)
-
-	local before = #h.calls
-	C.openThread(77, "Friend77")
-	check("opening a conversation costs 0 requests", #h.calls - before == 0, #h.calls - before)
-	check("the conversation is open", C.view == "thread" and C.threadId == 77)
-	check("only that friend's lines are in it", #C.threadMessages() == 1, #C.threadMessages())
-
-	-- the language bar reads their language, so the reply is translated
-	local them = C.threadMessages()[1]
-	them.lang = "pt"
-	before = #h.calls
-	C.enqueueSend("ok i will give you the fish")
-	check("sending in a conversation = 1 request", #h.calls - before == 1, #h.calls - before)
-	check("the line is translated into their language", last(h.sent) == "Ok, eu vou dar o peixe.", last(h.sent))
-	check("my line is tagged to the conversation", last(C.messages).thread == 77, last(C.messages).thread)
-	check("my line joins the conversation", #C.threadMessages() == 2, #C.threadMessages())
-	check("the conversation remembered the language", h.LANG.playerLang[77] == "pt", h.LANG.playerLang[77])
-	check("the other friend is not mixed in", #C.threadMessages() == 2, #C.threadMessages())
-
-	before = #h.calls
-	C.closeThread()
-	check("back closes it for free", C.view == "list" and C.threadId == nil and #h.calls == before)
-
-	-- profile pictures: one lookup per user, then cached
-	local got = nil
-	C.thumbnail(88, function(url) got = url end)
-	check("avatar url arrives", got == "rbxthumb://88", got)
-	C.thumbnail(88, function(url) got = url end)
-	check("the avatar is cached", h.thumbCalls == 1, h.thumbCalls)
-
-	C.openThread(77, "Friend77")
-	C.setTab("friends")
-	check("switching tabs leaves the conversation", C.view == "list" and C.tab == "friends")
-
-	-- a whisper channel the server created for the pair is used when present
-	local w = newHarness({ friends = { 77 }, google = true, whisper = { 1, 77 } })
-	receive(w, 77, "hola amigo", "RBXGeneral")
-	check("the whisper channel is found", w.CHAT.whisperChannel(77) == "RBXWhisper:1_77", w.CHAT.whisperChannel(77))
-	w.CHAT.openThread(77, "Friend77")
-	w.CHAT.setSpeakLang("es")
-	w.CHAT.enqueueSend("hello there")
-	check("the conversation sends into the whisper channel", w.lastChannel == "RBXWhisper:1_77", w.lastChannel)
-
-	-- without one it falls back to the channel the panel already talks in
-	local g2 = newHarness({ friends = { 77 }, google = true })
-	receive(g2, 77, "hi", "RBXGeneral")
-	check("a missing whisper channel is not an error", g2.CHAT.whisperChannel(77) == nil)
-	g2.CHAT.openThread(77, "Friend77")
-	g2.CHAT.setSpeakLang("es")
-	g2.CHAT.enqueueSend("hello there")
-	check("it falls back to general chat", g2.lastChannel == "RBXGeneral", g2.lastChannel)
 end
 
 print("")
